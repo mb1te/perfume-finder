@@ -71,6 +71,7 @@ func TestClassifyKindIsConservative(t *testing.T) {
 	}{
 		{input: "тестер 100 мл", want: ProductKindTester},
 		{input: "пробник 1.5 мл", want: ProductKindSample},
+		{input: "Сэмпл 3 мл", want: ProductKindSample},
 		{input: "миниатюра 8 мл", want: ProductKindMiniature},
 		{input: "отливант 10 мл", want: ProductKindDecant},
 		{input: "парфюмерная вода 100 мл в слюде", want: ProductKindRetail},

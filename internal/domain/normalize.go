@@ -79,7 +79,7 @@ func ClassifyKind(value string) ProductKind {
 	switch {
 	case containsAny(normalized, "тестер", "tester"):
 		return ProductKindTester
-	case containsAny(normalized, "пробник", "sample", "vial"):
+	case containsAny(normalized, "пробник", "сэмпл", "sample", "vial"):
 		return ProductKindSample
 	case containsAny(normalized, "миниатюра", "miniature", "mini "):
 		return ProductKindMiniature
