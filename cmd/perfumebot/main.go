@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"parfumes_finder/internal/config"
 	"parfumes_finder/internal/health"
+	"parfumes_finder/internal/registryhealth"
 	"parfumes_finder/internal/search"
 	"parfumes_finder/internal/shop"
 	"parfumes_finder/internal/shop/allure"
@@ -63,6 +64,9 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	go health.NewScheduler(adapters, storage.NewHealth(db, clock), cfg.HealthInterval).Run(ctx)
+	registryRepo := storage.NewRegistry(db)
+	registryChecker := registryhealth.NewChecker(&http.Client{Timeout: cfg.SearchTimeout}, nil)
+	go registryhealth.NewScheduler(registryRepo, registryChecker, storage.NewHealth(db, clock)).Run(ctx, cfg.HealthInterval)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/healthz" {
 			http.NotFound(w, r)
