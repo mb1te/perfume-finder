@@ -23,8 +23,8 @@ func ParseConcentration(value string) Concentration {
 	}{
 		{needles: []string{"elixir", "эликсир"}, value: ConcentrationElixir},
 		{needles: []string{"extrait de parfum", "extrait", "экстракт духов"}, value: ConcentrationExtrait},
-		{needles: []string{"eau de toilette", " edt ", " edt"}, value: ConcentrationEDT},
-		{needles: []string{"eau de parfum", " edp ", " edp"}, value: ConcentrationEDP},
+		{needles: []string{"eau de toilette", "туалетная вода", " edt ", " edt"}, value: ConcentrationEDT},
+		{needles: []string{"eau de parfum", "парфюмерная вода", " edp ", " edp"}, value: ConcentrationEDP},
 		{needles: []string{"eau de cologne", "cologne", "одеколон"}, value: ConcentrationCologne},
 		{needles: []string{"parfum", "духи"}, value: ConcentrationParfum},
 	}

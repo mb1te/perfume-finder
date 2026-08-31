@@ -23,6 +23,8 @@ func TestParseConcentration(t *testing.T) {
 		{name: "edt abbreviation", input: "Dior Sauvage EDT", want: ConcentrationEDT},
 		{name: "eau de toilette", input: "Eau de Toilette", want: ConcentrationEDT},
 		{name: "eau de parfum", input: "eau de parfum", want: ConcentrationEDP},
+		{name: "russian toilette", input: "туалетная вода", want: ConcentrationEDT},
+		{name: "russian parfum water", input: "парфюмерная вода", want: ConcentrationEDP},
 		{name: "extrait", input: "Extrait de Parfum", want: ConcentrationExtrait},
 		{name: "elixir", input: "Sauvage Elixir", want: ConcentrationElixir},
 		{name: "unknown", input: "Sauvage", want: ConcentrationUnknown},
