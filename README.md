@@ -21,3 +21,13 @@ docker compose ps
 ```
 
 SQLite хранится в volume `perfume-data`. Токен не коммитится. Healthcheck выполняется самим бинарником.
+
+## Реестр Fragrantica
+
+```bash
+go run ./cmd/shopregistry import --input-dir data/fragrantica/topic-235155 --pages 16
+go run ./cmd/shopregistry list
+go run ./cmd/shopregistry evidence --domain artparfum.ru
+```
+
+Импорт добавляет evidence, но не повышает trust новых доменов автоматически.
