@@ -111,7 +111,7 @@ Every adapter returns partial successes independently. A per-store timeout defau
 - fragrance name;
 - edition or year when applicable;
 - concentration;
-- volume in milliliters;
+- volume as integer microliters (rendered to users in milliliters);
 - selected product kind.
 
 `Offer` contains:
@@ -121,7 +121,7 @@ Every adapter returns partial successes independently. A per-store timeout defau
 - normalized brand and fragrance;
 - edition or year;
 - concentration;
-- volume in milliliters;
+- volume as integer microliters (rendered to users in milliliters);
 - product kind;
 - integer price in kopecks;
 - stock status;
@@ -243,4 +243,3 @@ The MVP is complete when:
 6. The full Fragrantica topic is importable without automatically trusting new domains.
 7. Store health is persisted and refreshed every six hours.
 8. The bot runs from Docker Compose on a single Yandex Cloud VPS with secrets supplied only at runtime.
-

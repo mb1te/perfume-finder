@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - perfume-data:/data
+volumes:
+  perfume-data:
