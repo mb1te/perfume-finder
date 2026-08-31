@@ -85,8 +85,7 @@ func parseProductDocument(doc *goquery.Document, product productLink, now time.T
 		concentration := domain.ParseConcentration(item.Item)
 		volume := domain.ParseVolumeMicroliters(item.Item)
 		kind := domain.ClassifyKind(item.Item)
-		normalized := domain.NormalizeText(item.Item)
-		if kind == domain.ProductKindUnknown && concentration != domain.ConcentrationUnknown && !strings.Contains(normalized, "refill") && !strings.Contains(normalized, "+") {
+		if kind == domain.ProductKindUnknown && domain.IsPlainRetailVariant(item.Item) {
 			kind = domain.ProductKindRetail
 		}
 		if concentration == domain.ConcentrationUnknown || volume == 0 || kind == domain.ProductKindUnknown || item.Price <= 0 || !strings.Contains(item.Availability, "InStock") {

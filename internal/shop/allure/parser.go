@@ -81,12 +81,13 @@ func parseProductDocument(document *goquery.Document, product productLink, retri
 		titleNode := item.Find(".offer-title__name").First().Clone()
 		titleNode.Children().Remove()
 		title := strings.TrimSpace(titleNode.Text())
-		kind := classifyOfferKind(title)
+		volumeText := item.Find(".offer-item__volume-availability .offer-volume").First().Text()
+		kind := classifyOfferKind(title, volumeText)
 		if kind == domain.ProductKindUnknown {
 			return
 		}
 		concentration := domain.ParseConcentration(title)
-		volume := domain.ParseVolumeMicroliters(item.Find(".offer-item__volume-availability .offer-volume").First().Text())
+		volume := domain.ParseVolumeMicroliters(volumeText)
 		price := parseRubles(item.Find(".offer-price--inner").First().Text())
 		if concentration == domain.ConcentrationUnknown || volume == 0 {
 			return
@@ -136,11 +137,11 @@ func splitEdition(value string) (string, string) {
 	return name, match[1]
 }
 
-func classifyOfferKind(title string) domain.ProductKind {
+func classifyOfferKind(title, volume string) domain.ProductKind {
 	if kind := domain.ClassifyKind(title); kind != domain.ProductKindUnknown {
 		return kind
 	}
-	if !strings.Contains(title, "(") {
+	if domain.IsPlainRetailVariant(title + " " + volume) {
 		return domain.ProductKindRetail
 	}
 	return domain.ProductKindUnknown

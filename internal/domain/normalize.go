@@ -92,6 +92,14 @@ func ClassifyKind(value string) ProductKind {
 	}
 }
 
+func IsPlainRetailVariant(value string) bool {
+	normalized := NormalizeText(value)
+	if ParseConcentration(normalized) == ConcentrationUnknown || ParseVolumeMicroliters(normalized) == 0 {
+		return false
+	}
+	return !containsAny(normalized, "тестер", "tester", "пробник", "сэмпл", "sample", "миниатюр", "отливант", "распив", "decant", "atomizer", "атомайзер", "refill", "рефилл", "уцен", "набор", " set ", "гель", "дезодорант", "бальзам", "крем")
+}
+
 func containsAny(value string, needles ...string) bool {
 	for _, needle := range needles {
 		if strings.Contains(value, needle) {

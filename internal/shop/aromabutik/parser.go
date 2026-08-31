@@ -81,7 +81,7 @@ func parseProductDocument(doc *goquery.Document, product productLink, now time.T
 		concentration := domain.ParseConcentration(title)
 		volume := domain.ParseVolumeMicroliters(title)
 		kind := domain.ClassifyKind(title)
-		if kind == domain.ProductKindUnknown && concentration != domain.ConcentrationUnknown {
+		if kind == domain.ProductKindUnknown && domain.IsPlainRetailVariant(title) {
 			kind = domain.ProductKindRetail
 		}
 		if concentration == domain.ConcentrationUnknown || volume == 0 || kind == domain.ProductKindUnknown || row.Find("button.ex_add_product").Length() == 0 {

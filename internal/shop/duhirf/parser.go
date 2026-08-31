@@ -74,7 +74,7 @@ func parseProductDocument(doc *goquery.Document, product productLink, now time.T
 		concentration := domain.ParseConcentration(title)
 		volume := domain.ParseVolumeMicroliters(title)
 		kind := domain.ClassifyKind(row.Text())
-		if kind == domain.ProductKindUnknown && concentration != domain.ConcentrationUnknown {
+		if kind == domain.ProductKindUnknown && domain.IsPlainRetailVariant(title) {
 			kind = domain.ProductKindRetail
 		}
 		priceText := onlyDigits.ReplaceAllString(row.Find(`[itemprop="price"]`).First().Text(), "")

@@ -95,7 +95,7 @@ func parseProduct(reader io.Reader, product productLink, now time.Time) (domain.
 	concentration := domain.ParseConcentration(schema.Name)
 	volume := domain.ParseVolumeMicroliters(schema.Name)
 	kind := domain.ClassifyKind(doc.Find("title").Text())
-	if kind == domain.ProductKindUnknown && concentration != domain.ConcentrationUnknown {
+	if kind == domain.ProductKindUnknown && domain.IsPlainRetailVariant(schema.Name) {
 		kind = domain.ProductKindRetail
 	}
 	if concentration == domain.ConcentrationUnknown || volume == 0 || kind == domain.ProductKindUnknown || selected.Price <= 0 {
