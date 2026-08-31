@@ -47,6 +47,10 @@ func (a *Adapter) Search(ctx context.Context, query domain.SearchQuery) ([]domai
 		if query.Name != "" && domain.NormalizeText(query.Name) != domain.NormalizeText(product.Name) {
 			continue
 		}
+		if validateErr := httpx.ValidateURLHost(product.URL, a.baseURL); validateErr != nil {
+			lastErr = shop.NewError(shop.ErrorAccess, validateErr)
+			continue
+		}
 		pd, getErr := a.client.GetDocument(ctx, product.URL)
 		if getErr != nil {
 			lastErr = getErr

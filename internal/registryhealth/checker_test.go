@@ -12,7 +12,7 @@ import (
 )
 
 func TestCheckerRejectsPrivateResolvedAddress(t *testing.T) {
-	checker := NewChecker(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	checker := newCheckerWithClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("HTTP called for private address")
 		return nil, nil
 	})}, fakeResolver{net.ParseIP("127.0.0.1")})
@@ -29,10 +29,17 @@ func TestCheckerClassifiesHealthyAndForbidden(t *testing.T) {
 		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader("ok")), Header: http.Header{}, Request: r}, nil
 		})}
-		result := NewChecker(client, fakeResolver{net.ParseIP("93.184.216.34")}).Check(context.Background(), registry.Shop{NetworkDomain: "shop.test"})
+		result := newCheckerWithClient(client, fakeResolver{net.ParseIP("93.184.216.34")}).Check(context.Background(), registry.Shop{NetworkDomain: "shop.test"})
 		if result.Status != tc.want {
 			t.Fatalf("status %d => %q", tc.status, result.Status)
 		}
+	}
+}
+
+func TestValidateTargetRejectsPrivateRedirect(t *testing.T) {
+	checker := newCheckerWithClient(&http.Client{}, fakeResolver{net.ParseIP("10.0.0.1")})
+	if err := checker.validateTarget(context.Background(), "http://metadata.internal/latest"); err == nil {
+		t.Fatal("private redirect target accepted")
 	}
 }
 

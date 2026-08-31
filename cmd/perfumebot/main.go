@@ -65,7 +65,7 @@ func run() error {
 	defer cancel()
 	go health.NewScheduler(adapters, storage.NewHealth(db, clock), cfg.HealthInterval).Run(ctx)
 	registryRepo := storage.NewRegistry(db)
-	registryChecker := registryhealth.NewChecker(&http.Client{Timeout: cfg.SearchTimeout}, nil)
+	registryChecker := registryhealth.NewChecker(nil, cfg.SearchTimeout)
 	go registryhealth.NewScheduler(registryRepo, registryChecker, storage.NewHealth(db, clock)).Run(ctx, cfg.HealthInterval)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/healthz" {

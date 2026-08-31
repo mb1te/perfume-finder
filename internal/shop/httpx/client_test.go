@@ -90,3 +90,14 @@ func TestPostFormReturnsBoundedBytes(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 }
+
+func TestValidateURLHostRejectsStoreSuppliedExternalLinks(t *testing.T) {
+	if err := ValidateURLHost("https://randewoo.ru/product/x", "https://randewoo.ru"); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"https://evil.example/product", "javascript:alert(1)", "https://randewoo.ru.evil.example/x"} {
+		if err := ValidateURLHost(raw, "https://randewoo.ru"); err == nil {
+			t.Fatalf("accepted %q", raw)
+		}
+	}
+}

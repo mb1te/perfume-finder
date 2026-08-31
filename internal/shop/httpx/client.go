@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"parfumes_finder/internal/shop"
 )
@@ -25,6 +26,21 @@ func New(client *http.Client) *Client {
 		client = http.DefaultClient
 	}
 	return &Client{http: client}
+}
+
+func ValidateURLHost(raw, allowedBase string) error {
+	target, err := url.Parse(raw)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" {
+		return fmt.Errorf("invalid product URL")
+	}
+	allowed, err := url.Parse(allowedBase)
+	if err != nil || allowed.Hostname() == "" {
+		return fmt.Errorf("invalid allowed host")
+	}
+	if !strings.EqualFold(target.Hostname(), allowed.Hostname()) {
+		return fmt.Errorf("product URL host %s is not allowed", target.Hostname())
+	}
+	return nil
 }
 
 func (client *Client) PostForm(ctx context.Context, endpoint string, values url.Values) ([]byte, error) {

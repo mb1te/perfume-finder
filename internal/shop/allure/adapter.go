@@ -53,6 +53,10 @@ func (adapter *Adapter) Search(ctx context.Context, query domain.SearchQuery) ([
 		if !matchesSelectedProduct(query, product) {
 			continue
 		}
+		if validateErr := httpx.ValidateURLHost(product.URL, adapter.baseURL); validateErr != nil {
+			lastErr = shop.NewError(shop.ErrorAccess, validateErr)
+			continue
+		}
 		productDocument, getErr := adapter.client.GetDocument(ctx, product.URL)
 		if getErr != nil {
 			lastErr = getErr
