@@ -32,6 +32,10 @@ func (client *Client) PostForm(ctx context.Context, endpoint string, values url.
 	return client.do(ctx, http.MethodPost, endpoint, body, "application/x-www-form-urlencoded")
 }
 
+func (client *Client) Get(ctx context.Context, endpoint string) ([]byte, error) {
+	return client.get(ctx, endpoint)
+}
+
 func (client *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 	return client.do(ctx, http.MethodGet, endpoint, nil, "")
 }
