@@ -3,4 +3,5 @@
 .worktrees/
 data/*.db
 data/*.db-*
+data/fragrantica/
 coverage.out
