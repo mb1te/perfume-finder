@@ -62,7 +62,7 @@
 - Test: `internal/domain/normalize_test.go`
 
 **Interfaces:**
-- Produces: `domain.SearchQuery`, `domain.Offer`, `domain.ProductKind`, `domain.Concentration`, `domain.NormalizeText`, `domain.ParseConcentration`, `domain.ParseVolumeML`, `domain.ClassifyKind`.
+- Produces: `domain.SearchQuery`, `domain.Offer`, `domain.ProductKind`, `domain.Concentration`, `domain.NormalizeText`, `domain.ParseConcentration`, `domain.ParseVolumeMicroliters`, `domain.ClassifyKind`.
 
 - [ ] **Step 1: Initialize the module and write the failing normalization tests**
 
@@ -91,10 +91,10 @@ func TestParseConcentration(t *testing.T) {
     }
 }
 
-func TestParseVolumeML(t *testing.T) {
-    for input, want := range map[string]int{"100 мл": 100, "1.5 ml": 1, "8ML": 8} {
-        if got := ParseVolumeML(input); got != want {
-            t.Fatalf("ParseVolumeML(%q) = %d, want %d", input, got, want)
+func TestParseVolumeMicroliters(t *testing.T) {
+    for input, want := range map[string]int{"100 мл": 100000, "1.5 ml": 1500, "8ML": 8000} {
+        if got := ParseVolumeMicroliters(input); got != want {
+            t.Fatalf("ParseVolumeMicroliters(%q) = %d, want %d", input, got, want)
         }
     }
 }
@@ -157,7 +157,7 @@ type SearchQuery struct {
     Name          string
     Edition       string
     Concentration Concentration
-    VolumeML      int
+    VolumeMicroliters int
     Kind          ProductKind
 }
 
@@ -168,7 +168,7 @@ type Offer struct {
     Name          string
     Edition       string
     Concentration Concentration
-    VolumeML      int
+    VolumeMicroliters int
     Kind          ProductKind
     PriceKopecks  int64
     InStock       bool
@@ -177,7 +177,7 @@ type Offer struct {
 }
 ```
 
-Implement normalization with lowercase Unicode text, `ё → е`, collapsed whitespace, explicit concentration patterns, decimal volume parsing, and ordered product-kind rules. Check `пробник` before volume-based guesses; never infer retail from volume alone.
+Implement normalization with lowercase Unicode text, `ё → е`, collapsed whitespace, explicit concentration patterns, decimal volume parsing into integer microliters, and ordered product-kind rules. Check `пробник` before volume-based guesses; never infer retail from volume alone.
 
 - [ ] **Step 4: Run formatting and domain tests**
 
@@ -210,8 +210,8 @@ The matcher table must include these cases:
 
 ```go
 func TestSameVariant(t *testing.T) {
-    query := domain.SearchQuery{Brand: "Christian Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT, VolumeML: 100, Kind: domain.ProductKindRetail}
-    base := domain.Offer{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT, VolumeML: 100, Kind: domain.ProductKindRetail}
+    query := domain.SearchQuery{Brand: "Christian Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail}
+    base := domain.Offer{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail}
 
     cases := []struct {
         name string
@@ -222,7 +222,7 @@ func TestSameVariant(t *testing.T) {
         {name: "eau sauvage", mutate: func(o *domain.Offer) { o.Name = "Eau Sauvage" }, want: false},
         {name: "elixir", mutate: func(o *domain.Offer) { o.Concentration = domain.ConcentrationElixir }, want: false},
         {name: "sample", mutate: func(o *domain.Offer) { o.Kind = domain.ProductKindSample }, want: false},
-        {name: "other volume", mutate: func(o *domain.Offer) { o.VolumeML = 60 }, want: false},
+        {name: "other volume", mutate: func(o *domain.Offer) { o.VolumeMicroliters = 60000 }, want: false},
     }
     for _, tc := range cases {
         t.Run(tc.name, func(t *testing.T) {
