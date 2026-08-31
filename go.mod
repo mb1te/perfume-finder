@@ -6,6 +6,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.13.0 // indirect
 	github.com/andybalholm/cascadia v1.3.4 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-telegram/bot v1.24.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
