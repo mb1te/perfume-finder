@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"parfumes_finder/internal/app"
 	"parfumes_finder/internal/config"
 	"parfumes_finder/internal/health"
 	"parfumes_finder/internal/registryhealth"
@@ -67,21 +67,28 @@ func run() error {
 	registryRepo := storage.NewRegistry(db)
 	registryChecker := registryhealth.NewChecker(nil, cfg.SearchTimeout)
 	go registryhealth.NewScheduler(registryRepo, registryChecker, storage.NewHealth(db, clock)).Run(ctx, cfg.HealthInterval)
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
-			http.NotFound(w, r)
-			return
+	readiness := app.NewReadiness()
+	server := &http.Server{Addr: cfg.HTTPAddr, Handler: readiness.Handler()}
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+			cancel()
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintln(w, "ok")
-	})}
-	go func() { _ = server.ListenAndServe() }()
+	}()
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
 		_ = server.Shutdown(shutdownCtx)
 	}()
+	readiness.MarkReady()
 	transport.Start(ctx)
-	return nil
+	readiness.MarkNotReady()
+	select {
+	case err := <-serverErr:
+		return err
+	default:
+		return nil
+	}
 }
