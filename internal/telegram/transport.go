@@ -12,7 +12,10 @@ type Transport struct {
 }
 
 func NewTransport(token string, sessions Sessions, searcher Searcher) (*Transport, error) {
-	b, err := bot.New(token)
+	b, err := bot.New(token,
+		bot.WithDefaultHandler(func(context.Context, *bot.Bot, *models.Update) {}),
+		bot.WithErrorsHandler(func(error) {}),
+	)
 	if err != nil {
 		return nil, err
 	}

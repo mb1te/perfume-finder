@@ -8,6 +8,7 @@ import (
 	"os"
 	"parfumes_finder/internal/domain"
 	"parfumes_finder/internal/shop/httpx"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +24,7 @@ func TestAdapterVerifiesAutocompleteCandidateOnProductPage(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/product" {
-			_, _ = w.Write(product)
+			_, _ = w.Write([]byte(strings.ReplaceAll(string(product), "https://randewoo.ru", serverURL(r))))
 			return
 		}
 		http.NotFound(w, r)

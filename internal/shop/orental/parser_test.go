@@ -45,6 +45,12 @@ func TestParseProductUsesExactJSONLDVariants(t *testing.T) {
 	assertVariant(t, offers, domain.ConcentrationEDT, domain.ProductKindTester, 100000, 1281500)
 	assertVariant(t, offers, domain.ConcentrationEDT, domain.ProductKindSample, 3000, 115400)
 	for _, offer := range offers {
+		if offer.Edition != "2015" {
+			t.Fatalf("edition=%q, want 2015", offer.Edition)
+		}
+		if offer.PriceKopecks == 1914200 {
+			t.Fatal("100 ml + 10 ml bundle leaked as retail")
+		}
 		if offer.Kind == domain.ProductKindUnknown {
 			t.Fatalf("unknown offer leaked: %+v", offer)
 		}

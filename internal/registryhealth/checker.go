@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"parfumes_finder/internal/registry"
@@ -56,8 +57,15 @@ func (c *Checker) Check(ctx context.Context, target registry.Shop) shop.HealthRe
 	if err != nil {
 		return shop.HealthResult{Status: shop.HealthDegraded, Err: err, CheckedAt: checked}
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 65536))
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 65536))
 	_ = response.Body.Close()
+	if readErr != nil {
+		return shop.HealthResult{Status: shop.HealthDegraded, Err: readErr, CheckedAt: checked}
+	}
+	lowerBody := strings.ToLower(string(body))
+	if containsChallenge(lowerBody) {
+		return shop.HealthResult{Status: shop.HealthDegraded, CanonicalURL: response.Request.URL.String(), Err: fmt.Errorf("anti-bot challenge"), CheckedAt: checked}
+	}
 	canonical := response.Request.URL.String()
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		status := shop.HealthHealthy
@@ -67,6 +75,15 @@ func (c *Checker) Check(ctx context.Context, target registry.Shop) shop.HealthRe
 		return shop.HealthResult{Status: status, CanonicalURL: canonical, CheckedAt: checked}
 	}
 	return shop.HealthResult{Status: shop.HealthDegraded, CanonicalURL: canonical, Err: fmt.Errorf("HTTP %d", response.StatusCode), CheckedAt: checked}
+}
+
+func containsChallenge(body string) bool {
+	for _, marker := range []string{"verify you are human", "captcha", "attention required", "cloudflare challenge", "войдите, чтобы продолжить"} {
+		if strings.Contains(body, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Checker) validateTarget(ctx context.Context, raw string) error {

@@ -6,6 +6,7 @@ import (
 	"parfumes_finder/internal/search"
 	"parfumes_finder/internal/storage"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -89,6 +90,24 @@ func TestHandlerRejectsCallbackFromSupersededSession(t *testing.T) {
 	}
 }
 
+func TestConcurrentNewSearchCannotBeOverwrittenByCanceledDiscovery(t *testing.T) {
+	started := make(chan struct{})
+	searcher := &supersedingSearcher{started: started}
+	sessions := newMemorySessions()
+	handler := NewHandler(&fakeMessenger{}, sessions, searcher)
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() { defer wait.Done(); _ = handler.HandleMessage(context.Background(), 12, "Old Query") }()
+	<-started
+	if err := handler.HandleMessage(context.Background(), 12, "New Query"); err != nil {
+		t.Fatal(err)
+	}
+	wait.Wait()
+	if got := sessions.values[12].Query.Name; got != "New" {
+		t.Fatalf("session overwritten with %q", got)
+	}
+}
+
 func buttonData(t *testing.T, messenger *fakeMessenger, suffix string) string {
 	t.Helper()
 	message := messenger.messages[len(messenger.messages)-1]
@@ -111,6 +130,17 @@ func (m *fakeMessenger) Send(_ context.Context, _ int64, msg Message) error {
 type fakeSearcher struct{ result search.Result }
 
 func (f fakeSearcher) Search(context.Context, domain.SearchQuery) search.Result { return f.result }
+
+type supersedingSearcher struct{ started chan struct{} }
+
+func (s *supersedingSearcher) Search(ctx context.Context, query domain.SearchQuery) search.Result {
+	if strings.HasPrefix(query.Raw, "Old") {
+		close(s.started)
+		<-ctx.Done()
+		return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "Old"}}}
+	}
+	return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "New"}}}
+}
 
 type memorySessions struct{ values map[int64]storage.Session }
 

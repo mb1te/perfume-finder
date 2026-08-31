@@ -55,28 +55,28 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 	sessionID := newSessionID()
 	searchCtx := h.beginSearch(ctx, chatID, sessionID)
 	result := h.searcher.Search(searchCtx, domain.SearchQuery{Raw: text})
-	if !h.finishSearch(chatID, sessionID) {
-		return nil
-	}
-	explicit := domain.SearchQuery{Raw: text, Concentration: domain.ParseConcentration(text), VolumeMicroliters: domain.ParseVolumeMicroliters(text), Kind: domain.ClassifyKind(text)}
-	options := candidatesFromOffers(result.Offers, explicit)
-	if len(options) == 0 {
-		return h.messenger.Send(ctx, chatID, Message{Text: "Ничего не найдено. Уточни бренд и название аромата."})
-	}
-	session := storage.Session{ChatID: chatID, ID: sessionID, Query: explicit, Options: options}
-	if len(options) > 1 {
-		session.Stage = "choose_fragrance"
-		if err := h.sessions.Save(ctx, session); err != nil {
-			return err
+	_, err := h.completeOwned(chatID, sessionID, func() error {
+		explicit := domain.SearchQuery{Raw: text, Concentration: domain.ParseConcentration(text), VolumeMicroliters: domain.ParseVolumeMicroliters(text), Kind: domain.ClassifyKind(text)}
+		options := candidatesFromOffers(result.Offers, explicit)
+		if len(options) == 0 {
+			return h.messenger.Send(ctx, chatID, Message{Text: "Ничего не найдено. Уточни бренд и название аромата."})
 		}
-		buttons := make([]Button, len(options))
-		for i, option := range options {
-			buttons[i] = Button{candidateLabel(option), callbackData(sessionID, "fragrance", strconv.Itoa(i))}
+		session := storage.Session{ChatID: chatID, ID: sessionID, Query: explicit, Options: options}
+		if len(options) > 1 {
+			session.Stage = "choose_fragrance"
+			if err := h.sessions.Save(ctx, session); err != nil {
+				return err
+			}
+			buttons := make([]Button, len(options))
+			for i, option := range options {
+				buttons[i] = Button{candidateLabel(option), callbackData(sessionID, "fragrance", strconv.Itoa(i))}
+			}
+			return h.messenger.Send(ctx, chatID, Message{Text: "Выбери аромат", Buttons: buttons})
 		}
-		return h.messenger.Send(ctx, chatID, Message{Text: "Выбери аромат", Buttons: buttons})
-	}
-	session.Query = mergeCandidate(explicit, options[0])
-	return h.advance(ctx, session)
+		session.Query = mergeCandidate(explicit, options[0])
+		return h.advance(ctx, session)
+	})
+	return err
 }
 
 func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string) error {
@@ -130,17 +130,20 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		}
 		searchCtx := h.beginSearch(ctx, chatID, session.ID)
 		result := h.searcher.Search(searchCtx, session.Query)
-		if !h.finishSearch(chatID, session.ID) {
-			return nil
-		}
-		current, ok, err := h.sessions.Load(ctx, chatID)
-		if err != nil || !ok || current.ID != session.ID {
-			return err
-		}
-		if err := h.sessions.Delete(ctx, chatID); err != nil {
-			return err
-		}
-		return h.messenger.Send(ctx, chatID, Message{Text: RenderResult(session.Query, result)})
+		_, err := h.completeOwned(chatID, session.ID, func() error {
+			current, ok, err := h.sessions.Load(ctx, chatID)
+			if err != nil {
+				return err
+			}
+			if !ok || current.ID != session.ID {
+				return fmt.Errorf("stale search result")
+			}
+			if err := h.sessions.Delete(ctx, chatID); err != nil {
+				return err
+			}
+			return h.messenger.Send(ctx, chatID, Message{Text: RenderResult(session.Query, result)})
+		})
+		return err
 	default:
 		return fmt.Errorf("unknown callback")
 	}
@@ -216,14 +219,15 @@ func (h *Handler) beginSearch(parent context.Context, chatID int64, id string) c
 	h.active[chatID] = activeSearch{id, cancel}
 	return ctx
 }
-func (h *Handler) finishSearch(chatID int64, id string) bool {
+func (h *Handler) completeOwned(chatID int64, id string, action func() error) (bool, error) {
 	h.activeMu.Lock()
 	defer h.activeMu.Unlock()
 	current, ok := h.active[chatID]
 	if !ok || current.id != id {
-		return false
+		return false, nil
 	}
+	err := action()
 	delete(h.active, chatID)
 	current.cancel()
-	return true
+	return true, err
 }

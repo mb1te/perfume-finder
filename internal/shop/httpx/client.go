@@ -16,6 +16,7 @@ import (
 const maxBodyBytes = 5 * 1024 * 1024
 
 var ErrBodyTooLarge = errors.New("response body exceeds 5 MiB")
+var errRedirectDenied = errors.New("redirect leaves approved host")
 
 type Client struct {
 	http *http.Client
@@ -67,11 +68,28 @@ func (client *Client) do(ctx context.Context, method, endpoint string, body []by
 		request.Header.Set("Content-Type", contentType)
 	}
 
-	response, err := client.http.Do(request)
+	httpClient := *client.http
+	previousRedirect := httpClient.CheckRedirect
+	httpClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if len(via) >= 5 || (next.URL.Scheme != "http" && next.URL.Scheme != "https") || !strings.EqualFold(next.URL.Host, request.URL.Host) {
+			return errRedirectDenied
+		}
+		if previousRedirect != nil {
+			return previousRedirect(next, via)
+		}
+		return nil
+	}
+	response, err := httpClient.Do(request)
 	if err != nil {
+		if errors.Is(err, errRedirectDenied) {
+			return nil, shop.NewError(shop.ErrorAccess, err)
+		}
 		return nil, err
 	}
 	defer response.Body.Close()
+	if !strings.EqualFold(response.Request.URL.Host, request.URL.Host) {
+		return nil, shop.NewError(shop.ErrorAccess, errRedirectDenied)
+	}
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		kind := shop.ErrorUnknown

@@ -13,7 +13,7 @@ import (
 	"parfumes_finder/internal/shop"
 )
 
-type productLink struct{ Brand, Name, URL string }
+type productLink struct{ Brand, Name, Edition, URL string }
 
 func parseSearch(reader io.Reader, baseURL string) ([]productLink, error) {
 	doc, err := goquery.NewDocumentFromReader(reader)
@@ -42,7 +42,7 @@ func parseSearchDocument(doc *goquery.Document, baseURL string) ([]productLink, 
 		brand := strings.TrimSpace(link.Find(".prod-teaser__brand").Text())
 		name := strings.TrimSpace(link.Find(".prod-teaser__name").Text())
 		if brand != "" && name != "" {
-			products = append(products, productLink{brand, name, resolved.String()})
+			products = append(products, productLink{Brand: brand, Name: name, URL: resolved.String()})
 		}
 	})
 	return products, nil
@@ -57,6 +57,13 @@ func parseProduct(reader io.Reader, product productLink, now time.Time) ([]domai
 }
 
 func parseProductDocument(doc *goquery.Document, product productLink, now time.Time) ([]domain.Offer, error) {
+	if product.Edition == "" {
+		if href, ok := doc.Find(`a[href*="?years="]`).First().Attr("href"); ok {
+			if parsed, err := url.Parse(href); err == nil {
+				product.Edition = parsed.Query().Get("years")
+			}
+		}
+	}
 	type schemaOffer struct {
 		Item         string `json:"item"`
 		Price        int64  `json:"price"`
@@ -91,7 +98,7 @@ func parseProductDocument(doc *goquery.Document, product productLink, now time.T
 		if concentration == domain.ConcentrationUnknown || volume == 0 || kind == domain.ProductKindUnknown || item.Price <= 0 || !strings.Contains(item.Availability, "InStock") {
 			continue
 		}
-		offers = append(offers, domain.Offer{ShopID: "orental", RawTitle: item.Item, Brand: product.Brand, Name: product.Name, Concentration: concentration, VolumeMicroliters: volume, Kind: kind, PriceKopecks: item.Price * 100, InStock: true, URL: product.URL, RetrievedAt: now})
+		offers = append(offers, domain.Offer{ShopID: "orental", RawTitle: item.Item, Brand: product.Brand, Name: product.Name, Edition: product.Edition, Concentration: concentration, VolumeMicroliters: volume, Kind: kind, PriceKopecks: item.Price * 100, InStock: true, URL: product.URL, RetrievedAt: now})
 	}
 	return offers, nil
 }

@@ -63,3 +63,33 @@ func TestAliasAndWarningEvidenceAreIndependentAndContextual(t *testing.T) {
 		}
 	}
 }
+
+func TestOpeningWhitelistKeepsExplicitAliasPairs(t *testing.T) {
+	file, err := os.Open("testdata/page-01.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	items, err := ParsePage(1, "https://topic", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range items {
+		if item.Kind == EvidenceAlias && ((item.NetworkDomain == "scente.ru" && item.RelatedNetworkDomain == "discenter.ru") || (item.NetworkDomain == "discenter.ru" && item.RelatedNetworkDomain == "scente.ru")) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("explicit scente/discenter alias missing from opening whitelist")
+	}
+}
+
+func TestExtractAliasPairsFromLocalPhrase(t *testing.T) {
+	text := "Магазин artparfum.ru имеет другие имена, в частности parfumday.ru + montale-mancera.ru"
+	pairs := extractAliasPairs(text, normalizeMentions(extractRawURLs(text), text))
+	if len(pairs) != 2 {
+		t.Fatalf("pairs=%+v", pairs)
+	}
+}

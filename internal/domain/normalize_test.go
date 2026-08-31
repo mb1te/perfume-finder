@@ -92,7 +92,7 @@ func TestIsPlainRetailVariantRequiresConcentrationVolumeAndNoSpecialMarker(t *te
 			t.Fatalf("retail rejected: %q", value)
 		}
 	}
-	for _, value := range []string{"туалетная вода 100 мл refill", "набор туалетная вода 100 мл", "Sauvage 100 мл", "гель для душа 100 мл"} {
+	for _, value := range []string{"туалетная вода 100 мл refill", "набор туалетная вода 100 мл", "парфюмерная вода 100 мл + парфюмерная вода 10 мл", "Sauvage 100 мл", "гель для душа 100 мл"} {
 		if IsPlainRetailVariant(value) {
 			t.Fatalf("non-retail accepted: %q", value)
 		}

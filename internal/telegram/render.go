@@ -15,6 +15,7 @@ func RenderResult(q domain.SearchQuery, result search.Result) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s · %s · %s\nБез доставки\n", html.EscapeString(q.Brand), html.EscapeString(q.Name), q.Concentration, formatVolume(q.VolumeMicroliters))
 	order := []domain.ProductKind{domain.ProductKindRetail, domain.ProductKindTester, domain.ProductKindDecant, domain.ProductKindMiniature, domain.ProductKindSample}
+	matched := 0
 	for _, kind := range order {
 		offers := groups[kind]
 		if len(offers) == 0 {
@@ -22,12 +23,20 @@ func RenderResult(q domain.SearchQuery, result search.Result) string {
 		}
 		fmt.Fprintf(&b, "\n%s\n", kindLabel(kind))
 		for _, offer := range offers {
+			matched++
 			fmt.Fprintf(&b, "%s — %s", html.EscapeString(offer.ShopID), formatRubles(offer.PriceKopecks))
 			if safeURL(offer.URL) {
 				fmt.Fprintf(&b, " — %s", offer.URL)
 			}
+			b.WriteString(" — В наличии")
+			if !offer.RetrievedAt.IsZero() {
+				fmt.Fprintf(&b, " · Проверено %s", offer.RetrievedAt.Format("15:04"))
+			}
 			b.WriteByte('\n')
 		}
+	}
+	if matched == 0 {
+		b.WriteString("\nТочный вариант не найден.\n")
 	}
 	if len(result.Failures) > 0 {
 		sort.Slice(result.Failures, func(i, j int) bool { return result.Failures[i].ShopID < result.Failures[j].ShopID })

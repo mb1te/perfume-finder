@@ -21,3 +21,9 @@ func TestHealthHandlerIsUnavailableUntilReady(t *testing.T) {
 		t.Fatalf("after=%d", after.Code)
 	}
 }
+
+func TestHealthcheckURLUsesConfiguredPortAndLoopback(t *testing.T) {
+	if got := HealthcheckURL("0.0.0.0:9090"); got != "http://127.0.0.1:9090/healthz" {
+		t.Fatal(got)
+	}
+}

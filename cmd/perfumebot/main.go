@@ -27,7 +27,11 @@ import (
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		resp, err := http.Get("http://127.0.0.1:8080/healthz")
+		address := os.Getenv("HTTP_ADDR")
+		if address == "" {
+			address = "127.0.0.1:8080"
+		}
+		resp, err := http.Get(app.HealthcheckURL(address))
 		if err != nil || resp.StatusCode != http.StatusOK {
 			os.Exit(1)
 		}

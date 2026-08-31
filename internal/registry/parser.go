@@ -14,7 +14,11 @@ import (
 
 var urlPattern = regexp.MustCompile(`(?i)(?:https?://)?(?:www\.)?(?:[a-zа-яё0-9-]+\.)+(?:ru|com|net|org|рф|ee)(?:/[^\s<>"']*)?`)
 
-type mention struct{ display, network, raw string }
+type mention struct {
+	display, network, raw string
+	position              int
+}
+type aliasPair struct{ canonical, alternate mention }
 
 func ParsePage(page int, topic string, reader io.Reader) ([]Evidence, error) {
 	doc, err := goquery.NewDocumentFromReader(reader)
@@ -31,20 +35,19 @@ func ParsePage(page int, topic string, reader io.Reader) ([]Evidence, error) {
 		}
 		postURL, _ := post.Find("a.post-time").Attr("href")
 		observed := parsePostDate(post.Find("a.post-time").Text())
-		rawURLs := urlPattern.FindAllString(text, -1)
+		rawURLs := extractRawURLs(text)
 		content.Find("a[href]").Each(func(_ int, a *goquery.Selection) {
 			if href, ok := a.Attr("href"); ok && strings.HasPrefix(href, "http") {
 				rawURLs = append(rawURLs, href)
 			}
 		})
-		mentions := normalizeMentions(rawURLs)
+		mentions := normalizeMentions(rawURLs, text)
 		if len(mentions) == 0 {
 			return
 		}
 		whitelist := page == 1 && post.HasClass("firstpost") && strings.Contains(text, "Адреса проверенных магазинов")
 		normalized := strings.ToLower(text)
 		warning := containsAnyRegistry(normalized, "не отгружает", "принимает деньги", "поддел", "мошенн", "не прислали товар", "не связываться")
-		alias := containsAnyRegistry(normalized, "бывший", "новый адрес", "называется", "другие имена", "переехал")
 		for _, current := range mentions {
 			kind := EvidenceMention
 			if whitelist {
@@ -55,20 +58,18 @@ func ParsePage(page int, topic string, reader io.Reader) ([]Evidence, error) {
 				appendEvidence(&result, seen, evidenceFor(current, mention{}, EvidenceWarning, page, postURL, observed, text))
 			}
 		}
-		if !whitelist && alias && len(mentions) > 1 {
-			canonical := mentions[0]
-			appendEvidence(&result, seen, evidenceFor(canonical, mentions[1], EvidenceAlias, page, postURL, observed, text))
-			for _, alternate := range mentions[1:] {
-				appendEvidence(&result, seen, evidenceFor(alternate, canonical, EvidenceAlias, page, postURL, observed, text))
-			}
+		for _, pair := range extractAliasPairs(text, mentions) {
+			appendEvidence(&result, seen, evidenceFor(pair.canonical, pair.alternate, EvidenceAlias, page, postURL, observed, text))
+			appendEvidence(&result, seen, evidenceFor(pair.alternate, pair.canonical, EvidenceAlias, page, postURL, observed, text))
 		}
 	})
 	return result, nil
 }
 
-func normalizeMentions(rawURLs []string) []mention {
+func normalizeMentions(rawURLs []string, text string) []mention {
 	var result []mention
 	seen := map[string]bool{}
+	lower := strings.ToLower(text)
 	for _, raw := range rawURLs {
 		raw = strings.TrimRight(raw, ".,);]…")
 		if !strings.HasPrefix(strings.ToLower(raw), "http://") && !strings.HasPrefix(strings.ToLower(raw), "https://") {
@@ -77,10 +78,53 @@ func normalizeMentions(rawURLs []string) []mention {
 		display, network, err := NormalizeDomain(raw)
 		if err == nil && !seen[network] {
 			seen[network] = true
-			result = append(result, mention{display, network, raw})
+			position := strings.Index(lower, strings.ToLower(display))
+			if position < 0 {
+				position = strings.Index(lower, strings.ToLower(network))
+			}
+			result = append(result, mention{display, network, raw, position})
 		}
 	}
 	return result
+}
+func extractAliasPairs(text string, mentions []mention) []aliasPair {
+	lower := strings.ToLower(text)
+	var pairs []aliasPair
+	for _, trigger := range []string{"бывший", "новый адрес", "называется", "другие имена", "переехал"} {
+		offset := 0
+		for {
+			relative := strings.Index(lower[offset:], trigger)
+			if relative < 0 {
+				break
+			}
+			position := offset + relative
+			end := position + 700
+			if end > len(text) {
+				end = len(text)
+			}
+			canonicalIndex := -1
+			for i, m := range mentions {
+				if m.position >= 0 && m.position < position && (canonicalIndex < 0 || m.position > mentions[canonicalIndex].position) {
+					canonicalIndex = i
+				}
+			}
+			if canonicalIndex >= 0 {
+				window := text[position:end]
+				alternates := normalizeMentions(extractRawURLs(window), window)
+				for _, alternate := range alternates {
+					if alternate.network != mentions[canonicalIndex].network {
+						pairs = append(pairs, aliasPair{mentions[canonicalIndex], alternate})
+					}
+				}
+			}
+			offset = position + len(trigger)
+		}
+	}
+	return pairs
+}
+func extractRawURLs(text string) []string {
+	separated := strings.ReplaceAll(strings.ReplaceAll(text, "https://", " https://"), "http://", " http://")
+	return urlPattern.FindAllString(separated, -1)
 }
 func evidenceFor(current, related mention, kind EvidenceKind, page int, postURL string, observed time.Time, text string) Evidence {
 	item := Evidence{NetworkDomain: current.network, DisplayDomain: current.display, RelatedNetworkDomain: related.network, RelatedDisplayDomain: related.display, Kind: kind, Page: page, PostURL: postURL, ObservedAt: observed, Excerpt: contextAround(text, current.display, current.network)}

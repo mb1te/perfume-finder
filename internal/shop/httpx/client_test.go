@@ -101,3 +101,14 @@ func TestValidateURLHostRejectsStoreSuppliedExternalLinks(t *testing.T) {
 		}
 	}
 }
+
+func TestGetDocumentRejectsRedirectOutsideOriginalHost(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "metadata") }))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
+	defer source.Close()
+	_, err := New(source.Client()).GetDocument(context.Background(), source.URL)
+	if err == nil || shop.ErrorKindOf(err) != shop.ErrorAccess {
+		t.Fatalf("redirect error=%v kind=%q", err, shop.ErrorKindOf(err))
+	}
+}

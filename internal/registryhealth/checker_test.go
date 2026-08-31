@@ -43,6 +43,16 @@ func TestValidateTargetRejectsPrivateRedirect(t *testing.T) {
 	}
 }
 
+func TestCheckerTreatsHTTP200ChallengeAsDegraded(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("Verify you are human - CAPTCHA")), Header: http.Header{}, Request: r}, nil
+	})}
+	result := newCheckerWithClient(client, fakeResolver{net.ParseIP("93.184.216.34")}).Check(context.Background(), registry.Shop{NetworkDomain: "shop.test"})
+	if result.Status != shop.HealthDegraded || result.Err == nil {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 type fakeResolver struct{ ip net.IP }
 
 func (r fakeResolver) LookupIP(context.Context, string, string) ([]net.IP, error) {

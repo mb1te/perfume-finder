@@ -60,7 +60,7 @@ func (a *Adapter) Search(ctx context.Context, q domain.SearchQuery) ([]domain.Of
 			continue
 		}
 		offer, skus, e := parseProduct(bytes.NewReader(payload), p, a.clock())
-		if e == nil && offer.InStock && !seen[offer.URL] {
+		if e == nil && offer.InStock && httpx.ValidateURLHost(offer.URL, a.siteURL) == nil && !seen[offer.URL] {
 			offers = append(offers, offer)
 			seen[offer.URL] = true
 		}
@@ -80,7 +80,7 @@ func (a *Adapter) Search(ctx context.Context, q domain.SearchQuery) ([]domain.Of
 				continue
 			}
 			variant, _, parseErr := parseProduct(bytes.NewReader(variantPayload), p, a.clock())
-			if parseErr == nil && variant.InStock && !seen[variant.URL] {
+			if parseErr == nil && variant.InStock && httpx.ValidateURLHost(variant.URL, a.siteURL) == nil && !seen[variant.URL] {
 				offers = append(offers, variant)
 				seen[variant.URL] = true
 			}
