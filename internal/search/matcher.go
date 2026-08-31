@@ -14,7 +14,7 @@ func SameVariant(query domain.SearchQuery, offer domain.Offer) bool {
 	if domain.NormalizeText(query.Name) != domain.NormalizeText(offer.Name) {
 		return false
 	}
-	if domain.NormalizeText(query.Edition) != domain.NormalizeText(offer.Edition) {
+	if query.Edition != "" && domain.NormalizeText(query.Edition) != domain.NormalizeText(offer.Edition) {
 		return false
 	}
 	if query.Concentration != offer.Concentration {
