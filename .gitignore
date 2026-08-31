@@ -1,6 +1,6 @@
 .env
 .superpowers/
+.worktrees/
 data/*.db
 data/*.db-*
 coverage.out
-
