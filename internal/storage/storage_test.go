@@ -43,12 +43,14 @@ func TestSessionsRoundTripAndDelete(t *testing.T) {
 	sessions := NewSessions(db)
 	want := Session{
 		ChatID: 42,
+		ID:     "session-1",
 		Stage:  "choose_volume",
 		Query: domain.SearchQuery{
 			Brand:         "Christian Dior",
 			Name:          "Sauvage",
 			Concentration: domain.ConcentrationEDT,
 		},
+		Options: []domain.SearchQuery{{Brand: "Tom Ford", Name: "Ombre Leather"}},
 	}
 
 	if err := sessions.Save(context.Background(), want); err != nil {

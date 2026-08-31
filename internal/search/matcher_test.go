@@ -82,11 +82,15 @@ func TestSameVariantAllowsKnownKindsForAllKindsQuery(t *testing.T) {
 	}
 }
 
-func TestSameVariantIgnoresOfferEditionOnlyWhenQueryEditionIsEmpty(t *testing.T) {
+func TestSameVariantRequiresEditionEqualityEvenWhenOneSideIsEmpty(t *testing.T) {
 	query := domain.SearchQuery{Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail}
 	offer := domain.Offer{Brand: "Christian Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail}
+	if SameVariant(query, offer) {
+		t.Fatal("unspecified query edition accepted a year-specific offer")
+	}
+	query.Edition = "2015"
 	if !SameVariant(query, offer) {
-		t.Fatal("unspecified query edition rejected a matching offer")
+		t.Fatal("matching explicit edition rejected")
 	}
 	query.Edition = "2025"
 	if SameVariant(query, offer) {

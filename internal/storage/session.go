@@ -11,9 +11,17 @@ import (
 )
 
 type Session struct {
-	ChatID int64
-	Stage  string
-	Query  domain.SearchQuery
+	ChatID  int64
+	ID      string
+	Stage   string
+	Query   domain.SearchQuery
+	Options []domain.SearchQuery
+}
+
+type sessionPayload struct {
+	ID      string               `json:"id"`
+	Query   domain.SearchQuery   `json:"query"`
+	Options []domain.SearchQuery `json:"options,omitempty"`
 }
 
 type Sessions struct {
@@ -25,7 +33,7 @@ func NewSessions(db *sql.DB) *Sessions {
 }
 
 func (sessions *Sessions) Save(ctx context.Context, session Session) error {
-	queryJSON, err := json.Marshal(session.Query)
+	queryJSON, err := json.Marshal(sessionPayload{ID: session.ID, Query: session.Query, Options: session.Options})
 	if err != nil {
 		return fmt.Errorf("encode session query: %w", err)
 	}
@@ -53,9 +61,11 @@ func (sessions *Sessions) Load(ctx context.Context, chatID int64) (Session, bool
 	if err != nil {
 		return Session{}, false, fmt.Errorf("load telegram session: %w", err)
 	}
-	if err := json.Unmarshal(queryJSON, &session.Query); err != nil {
+	var payload sessionPayload
+	if err := json.Unmarshal(queryJSON, &payload); err != nil {
 		return Session{}, false, fmt.Errorf("decode telegram session: %w", err)
 	}
+	session.ID, session.Query, session.Options = payload.ID, payload.Query, payload.Options
 	return session, true, nil
 }
 
