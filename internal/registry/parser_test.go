@@ -2,6 +2,7 @@ package registry
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -34,4 +35,31 @@ func hasEvidence(items []Evidence, domain string, kind EvidenceKind) bool {
 		}
 	}
 	return false
+}
+
+func TestAliasAndWarningEvidenceAreIndependentAndContextual(t *testing.T) {
+	file, err := os.Open("testdata/page-16.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	items, err := ParsePage(16, "https://topic", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasEvidence(items, "artparfum.ru", EvidenceWarning) || !hasEvidence(items, "artparfum.ru", EvidenceAlias) {
+		t.Fatal("artparfum warning/alias pair missing")
+	}
+	for _, domain := range []string{"parfumday.ru", "montale-mancera.ru"} {
+		found := false
+		for _, item := range items {
+			if item.NetworkDomain == domain && item.Kind == EvidenceAlias && item.RelatedNetworkDomain == "artparfum.ru" {
+				found = strings.Contains(strings.ToLower(item.Excerpt), domain)
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("auditable alias for %s missing", domain)
+		}
+	}
 }
