@@ -31,7 +31,10 @@ func Run(ctx context.Context, args []string, out io.Writer, dbPath string) int {
 		if fs.Parse(args[1:]) != nil {
 			return 2
 		}
-		seedApproved(ctx, repo)
+		if err := seedApproved(ctx, repo); err != nil {
+			fmt.Fprintln(out, err)
+			return 1
+		}
 		items, err := registry.ImportDir(ctx, *dir, *pages, "https://www.fragrantica.ru/board/viewtopic.php?id=235155")
 		if err == nil {
 			err = repo.ImportEvidence(ctx, items)
@@ -90,8 +93,21 @@ func Run(ctx context.Context, args []string, out io.Writer, dbPath string) int {
 		return 2
 	}
 }
-func seedApproved(ctx context.Context, repo *storage.Registry) {
-	for _, item := range []struct{ network, display string }{{"randewoo.ru", "randewoo.ru"}, {"allureparfum.ru", "allureparfum.ru"}, {"orental.ru", "orental.ru"}, {"xn--d1ai6ai.xn--p1ai", "духи.рф"}, {"aroma-butik.ru", "aroma-butik.ru"}} {
-		_ = repo.SetTrust(ctx, item.network, item.display, registry.TrustTrusted, true)
+func seedApproved(ctx context.Context, repo *storage.Registry) error {
+	existing, err := repo.ListShops(ctx)
+	if err != nil {
+		return err
 	}
+	present := make(map[string]bool, len(existing))
+	for _, shop := range existing {
+		present[shop.NetworkDomain] = true
+	}
+	for _, item := range []struct{ network, display string }{{"randewoo.ru", "randewoo.ru"}, {"allureparfum.ru", "allureparfum.ru"}, {"orental.ru", "orental.ru"}, {"xn--d1ai6ai.xn--p1ai", "духи.рф"}, {"aroma-butik.ru", "aroma-butik.ru"}} {
+		if !present[item.network] {
+			if err := repo.SetTrust(ctx, item.network, item.display, registry.TrustTrusted, true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

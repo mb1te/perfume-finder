@@ -31,3 +31,28 @@ func TestImportAndListCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestRepeatedImportDoesNotReenableBlockedApprovedShop(t *testing.T) {
+	dir := t.TempDir()
+	html := `<div class="post firstpost"><div class="entry-content">Адреса проверенных магазинов: https://randewoo.ru</div></div>`
+	if err := os.WriteFile(filepath.Join(dir, "page-01.html"), []byte(html), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(t.TempDir(), "registry.db")
+	var out bytes.Buffer
+	ctx := context.Background()
+	if Run(ctx, []string{"import", "--input-dir", dir, "--pages", "1"}, &out, db) != 0 {
+		t.Fatal(out.String())
+	}
+	if Run(ctx, []string{"set-trust", "--domain", "randewoo.ru", "--trust", "blocked", "--enabled=false"}, &out, db) != 0 {
+		t.Fatal(out.String())
+	}
+	if Run(ctx, []string{"import", "--input-dir", dir, "--pages", "1"}, &out, db) != 0 {
+		t.Fatal(out.String())
+	}
+	out.Reset()
+	_ = Run(ctx, []string{"list"}, &out, db)
+	if !strings.Contains(out.String(), "randewoo.ru\tblocked\tfalse") {
+		t.Fatal(out.String())
+	}
+}
