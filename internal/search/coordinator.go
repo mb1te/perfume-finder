@@ -62,6 +62,11 @@ func newCoordinator(adapters []shop.Adapter, timeout time.Duration, cache Cache,
 }
 
 func (coordinator *Coordinator) Search(ctx context.Context, query domain.SearchQuery) Result {
+	if coordinator.cache != nil {
+		if offers, hit, err := coordinator.cache.Get(ctx, query); err == nil && hit {
+			return Result{Offers: offers, Cached: true}
+		}
+	}
 	type adapterResult struct {
 		offers  []domain.Offer
 		failure *Failure
@@ -109,6 +114,9 @@ func (coordinator *Coordinator) Search(ctx context.Context, query domain.SearchQ
 		if adapterResult.failure != nil {
 			result.Failures = append(result.Failures, *adapterResult.failure)
 		}
+	}
+	if coordinator.cache != nil && len(result.Offers) > 0 {
+		_ = coordinator.cache.Put(ctx, query, result.Offers)
 	}
 	return result
 }
