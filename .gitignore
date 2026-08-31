@@ -1,0 +1,6 @@
+.env
+.superpowers/
+data/*.db
+data/*.db-*
+coverage.out
+
