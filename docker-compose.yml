@@ -6,10 +6,24 @@ services:
       - path: .env
         required: false
     environment:
+      FRAGRANTICA_ENRICHER_URL: http://fragrantica-enricher:8081
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-}
     volumes:
       - perfume-data:/data
+  fragrantica-enricher:
+    build:
+      context: .
+      dockerfile: Dockerfile.enricher
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    shm_size: 128m
+    mem_limit: 512m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
 volumes:
   perfume-data:

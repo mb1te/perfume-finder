@@ -2,7 +2,7 @@
 
 set -eu
 
-test_id="$$"
+test_id="$(date +%s)-$$"
 image_name="perfume-finder-startup-test-${test_id}"
 container_name="perfume-finder-volume-seed-${test_id}"
 volume_name="perfume-finder-startup-test-${test_id}"

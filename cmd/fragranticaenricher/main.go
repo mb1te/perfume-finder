@@ -44,7 +44,8 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: fragranticaenricher [healthcheck]")
 	}
 
-	allocatorCtx, allocatorCancel := chromedp.NewExecAllocator(ctx, chromedp.DefaultExecAllocatorOptions[:]...)
+	allocatorOptions := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.NoSandbox)
+	allocatorCtx, allocatorCancel := chromedp.NewExecAllocator(ctx, allocatorOptions...)
 	defer allocatorCancel()
 	renderer, err := fragrantica.NewBrowserRenderer(allocatorCtx, nil)
 	if err != nil {
