@@ -1,5 +1,7 @@
 package domain
 
+import "sort"
+
 type ProductKind string
 
 const (
@@ -32,4 +34,23 @@ type SearchQuery struct {
 	Concentration     Concentration
 	VolumeMicroliters int
 	Kind              ProductKind
+}
+
+type FragranceCandidate struct {
+	Query          SearchQuery
+	Concentrations []Concentration
+}
+
+func SortConcentrations(values []Concentration) []Concentration {
+	order := map[Concentration]int{
+		ConcentrationEDT:     0,
+		ConcentrationEDP:     1,
+		ConcentrationParfum:  2,
+		ConcentrationExtrait: 3,
+		ConcentrationCologne: 4,
+		ConcentrationElixir:  5,
+	}
+	result := append([]Concentration(nil), values...)
+	sort.Slice(result, func(i, j int) bool { return order[result[i]] < order[result[j]] })
+	return result
 }

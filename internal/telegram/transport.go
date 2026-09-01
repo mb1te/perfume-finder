@@ -1,9 +1,13 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
+
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+
+	"parfumes_finder/internal/enrichment"
 )
 
 type Transport struct {
@@ -11,7 +15,7 @@ type Transport struct {
 	handler *Handler
 }
 
-func NewTransport(token string, sessions Sessions, searcher Searcher) (*Transport, error) {
+func NewTransport(token string, sessions Sessions, searcher Searcher, enricher enrichment.Service) (*Transport, error) {
 	b, err := bot.New(token,
 		bot.WithDefaultHandler(func(context.Context, *bot.Bot, *models.Update) {}),
 		bot.WithErrorsHandler(func(error) {}),
@@ -20,13 +24,24 @@ func NewTransport(token string, sessions Sessions, searcher Searcher) (*Transpor
 		return nil, err
 	}
 	t := &Transport{bot: b}
-	t.handler = NewHandler(t, sessions, searcher)
+	t.handler = NewHandler(t, sessions, searcher, enricher)
 	b.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypePrefix, t.onMessage)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "", bot.MatchTypePrefix, t.onCallback)
 	return t, nil
 }
 func (t *Transport) Start(ctx context.Context) { t.bot.Start(ctx) }
 func (t *Transport) Send(ctx context.Context, chatID int64, message Message) error {
+	if len(message.PhotoPNG) > 0 {
+		_, err := t.bot.SendPhoto(ctx, &bot.SendPhotoParams{
+			ChatID: chatID,
+			Photo: &models.InputFileUpload{
+				Filename: "fragrantica.png",
+				Data:     bytes.NewReader(message.PhotoPNG),
+			},
+			Caption: message.Caption,
+		})
+		return err
+	}
 	var keyboard [][]models.InlineKeyboardButton
 	for i := 0; i < len(message.Buttons); i += 2 {
 		end := i + 2
@@ -48,7 +63,7 @@ func (t *Transport) Send(ctx context.Context, chatID int64, message Message) err
 }
 func (t *Transport) onMessage(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	if update.Message != nil {
-		_ = t.handler.HandleMessage(ctx, update.Message.Chat.ID, update.Message.Text)
+		_ = t.handler.HandleMessageUpdate(ctx, update.ID, update.Message.Chat.ID, update.Message.Text)
 	}
 }
 func (t *Transport) onCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -59,6 +74,6 @@ func (t *Transport) onCallback(ctx context.Context, b *bot.Bot, update *models.U
 	if update.CallbackQuery.Message.Message != nil {
 		chatID = update.CallbackQuery.Message.Message.Chat.ID
 	}
-	_ = t.handler.HandleCallback(ctx, chatID, update.CallbackQuery.Data)
+	_ = t.handler.HandleCallbackUpdate(ctx, update.ID, chatID, update.CallbackQuery.Data)
 	_, _ = b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
 }

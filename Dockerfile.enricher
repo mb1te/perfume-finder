@@ -1,0 +1,14 @@
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -o /out/fragranticaenricher ./cmd/fragranticaenricher
+
+FROM alpine:3.23
+RUN apk add --no-cache chromium ca-certificates && adduser -D -u 65532 enricher
+COPY --from=build /out/fragranticaenricher /fragranticaenricher
+ENV HOME=/tmp CHROME_PATH=/usr/bin/chromium-browser CHROME_NO_SANDBOX=1 HTTP_ADDR=:8081
+USER 65532:65532
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD ["/fragranticaenricher", "healthcheck"]
+ENTRYPOINT ["/fragranticaenricher"]

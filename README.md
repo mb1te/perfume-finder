@@ -20,7 +20,13 @@ docker compose up -d --build
 docker compose ps
 ```
 
-SQLite хранится в volume `perfume-data`. Токен не коммитится. Healthcheck выполняется самим бинарником.
+`docker compose up -d --build` собирает и запускает бот вместе с приватным
+Fragrantica-sidecar; наружу sidecar не публикуется. SQLite хранится в volume
+`perfume-data`. Токен не коммитится. Healthcheck выполняется самим бинарником.
+
+Обогащение данными Fragrantica работает в режиме best effort: Cloudflare может
+заблокировать запрос или изменить страницу. Это не мешает запуску и готовности
+бота — поиск цен продолжит работать без карточки Fragrantica.
 
 ## Реестр Fragrantica
 

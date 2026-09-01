@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"parfumes_finder/internal/app"
 	"parfumes_finder/internal/config"
+	"parfumes_finder/internal/enrichment"
 	"parfumes_finder/internal/health"
 	"parfumes_finder/internal/registryhealth"
 	"parfumes_finder/internal/search"
@@ -61,7 +62,15 @@ func run() error {
 	clock := time.Now
 	adapters := []shop.Adapter{randewoo.New(client, clock), allure.New(client, clock), orental.New(client, clock), duhirf.New(client, clock), aromabutik.New(client, clock)}
 	coordinator := search.NewCoordinator(adapters, cfg.SearchTimeout, storage.NewCache(db, cfg.CacheTTL, clock))
-	transport, err := tg.NewTransport(cfg.TelegramToken, storage.NewSessions(db), coordinator)
+	var enricher enrichment.Service
+	if cfg.FragranticaEnricherURL != "" {
+		remote, err := enrichment.NewHTTPClient(cfg.FragranticaEnricherURL, &http.Client{Timeout: 15 * time.Second})
+		if err != nil {
+			return err
+		}
+		enricher = enrichment.NewCachedService(remote, storage.NewEnrichmentCache(db, 7*24*time.Hour, clock))
+	}
+	transport, err := tg.NewTransport(cfg.TelegramToken, storage.NewSessions(db), coordinator, enricher)
 	if err != nil {
 		return err
 	}

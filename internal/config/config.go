@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	TelegramToken, DBPath, HTTPAddr         string
+	FragranticaEnricherURL                  string
 	SearchTimeout, CacheTTL, HealthInterval time.Duration
 	GlobalConcurrency, PerStoreConcurrency  int
 }
@@ -25,5 +26,5 @@ func Load() (Config, error) {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-	return Config{TelegramToken: token, DBPath: db, HTTPAddr: addr, SearchTimeout: 8 * time.Second, CacheTTL: 15 * time.Minute, HealthInterval: 6 * time.Hour, GlobalConcurrency: 20, PerStoreConcurrency: 2}, nil
+	return Config{TelegramToken: token, DBPath: db, HTTPAddr: addr, FragranticaEnricherURL: os.Getenv("FRAGRANTICA_ENRICHER_URL"), SearchTimeout: 8 * time.Second, CacheTTL: 15 * time.Minute, HealthInterval: 6 * time.Hour, GlobalConcurrency: 20, PerStoreConcurrency: 2}, nil
 }

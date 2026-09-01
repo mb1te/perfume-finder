@@ -11,17 +11,20 @@ import (
 )
 
 type Session struct {
-	ChatID  int64
-	ID      string
-	Stage   string
-	Query   domain.SearchQuery
-	Options []domain.SearchQuery
+	ChatID         int64
+	ID             string
+	Stage          string
+	Query          domain.SearchQuery
+	Candidates     []domain.FragranceCandidate
+	Concentrations []domain.Concentration
 }
 
 type sessionPayload struct {
-	ID      string               `json:"id"`
-	Query   domain.SearchQuery   `json:"query"`
-	Options []domain.SearchQuery `json:"options,omitempty"`
+	ID             string                      `json:"id"`
+	Query          domain.SearchQuery          `json:"query"`
+	Candidates     []domain.FragranceCandidate `json:"candidates,omitempty"`
+	Concentrations []domain.Concentration      `json:"concentrations,omitempty"`
+	LegacyOptions  []domain.SearchQuery        `json:"options,omitempty"`
 }
 
 type Sessions struct {
@@ -33,7 +36,9 @@ func NewSessions(db *sql.DB) *Sessions {
 }
 
 func (sessions *Sessions) Save(ctx context.Context, session Session) error {
-	queryJSON, err := json.Marshal(sessionPayload{ID: session.ID, Query: session.Query, Options: session.Options})
+	queryJSON, err := json.Marshal(sessionPayload{
+		ID: session.ID, Query: session.Query, Candidates: session.Candidates, Concentrations: session.Concentrations,
+	})
 	if err != nil {
 		return fmt.Errorf("encode session query: %w", err)
 	}
@@ -65,7 +70,14 @@ func (sessions *Sessions) Load(ctx context.Context, chatID int64) (Session, bool
 	if err := json.Unmarshal(queryJSON, &payload); err != nil {
 		return Session{}, false, fmt.Errorf("decode telegram session: %w", err)
 	}
-	session.ID, session.Query, session.Options = payload.ID, payload.Query, payload.Options
+	session.ID, session.Query = payload.ID, payload.Query
+	session.Candidates, session.Concentrations = payload.Candidates, payload.Concentrations
+	if len(session.Candidates) == 0 && len(payload.LegacyOptions) > 0 {
+		session.Candidates = make([]domain.FragranceCandidate, len(payload.LegacyOptions))
+		for i, option := range payload.LegacyOptions {
+			session.Candidates[i] = domain.FragranceCandidate{Query: option}
+		}
+	}
 	return session, true, nil
 }
 

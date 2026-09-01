@@ -50,7 +50,11 @@ func TestSessionsRoundTripAndDelete(t *testing.T) {
 			Name:          "Sauvage",
 			Concentration: domain.ConcentrationEDT,
 		},
-		Options: []domain.SearchQuery{{Brand: "Tom Ford", Name: "Ombre Leather"}},
+		Candidates: []domain.FragranceCandidate{{
+			Query:          domain.SearchQuery{Brand: "Tom Ford", Name: "Ombre Leather"},
+			Concentrations: []domain.Concentration{domain.ConcentrationEDP},
+		}},
+		Concentrations: []domain.Concentration{domain.ConcentrationEDT},
 	}
 
 	if err := sessions.Save(context.Background(), want); err != nil {
@@ -65,6 +69,28 @@ func TestSessionsRoundTripAndDelete(t *testing.T) {
 	}
 	if _, ok, err := sessions.Load(context.Background(), want.ChatID); err != nil || ok {
 		t.Fatalf("Load() after delete = ok %v, err %v", ok, err)
+	}
+}
+
+func TestSessionsLoadLegacyOptionsAsCandidates(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	sessions := NewSessions(db)
+	if _, err := db.Exec(`
+        INSERT INTO telegram_sessions(chat_id, stage, query_json, updated_at)
+        VALUES(?, ?, ?, ?)
+    `, 42, "choose_fragrance", `{"id":"session-1","query":{"Brand":"Dior","Name":"Sauvage"},"options":[{"Brand":"Tom Ford","Name":"Ombre Leather"}]}`, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := sessions.Load(context.Background(), 42)
+	if err != nil || !ok {
+		t.Fatalf("Load() = %+v, %v, %v", got, ok, err)
+	}
+	want := []domain.FragranceCandidate{{Query: domain.SearchQuery{Brand: "Tom Ford", Name: "Ombre Leather"}}}
+	if !reflect.DeepEqual(got.Candidates, want) {
+		t.Fatalf("Candidates = %+v, want %+v", got.Candidates, want)
 	}
 }
 
