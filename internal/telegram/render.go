@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"fmt"
-	"html"
 	"net/url"
 	"parfumes_finder/internal/domain"
 	"parfumes_finder/internal/search"
@@ -13,7 +12,7 @@ import (
 func RenderResult(q domain.SearchQuery, result search.Result) string {
 	groups := search.GroupAndSort(q, result.Offers)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s · %s · %s\nБез доставки\n", html.EscapeString(q.Brand), html.EscapeString(q.Name), q.Concentration, formatVolume(q.VolumeMicroliters))
+	fmt.Fprintf(&b, "%s %s · %s · %s\nБез доставки\n", q.Brand, q.Name, q.Concentration, formatVolume(q.VolumeMicroliters))
 	order := []domain.ProductKind{domain.ProductKindRetail, domain.ProductKindTester, domain.ProductKindDecant, domain.ProductKindMiniature, domain.ProductKindSample}
 	matched := 0
 	for _, kind := range order {
@@ -24,7 +23,7 @@ func RenderResult(q domain.SearchQuery, result search.Result) string {
 		fmt.Fprintf(&b, "\n%s\n", kindLabel(kind))
 		for _, offer := range offers {
 			matched++
-			fmt.Fprintf(&b, "%s — %s", html.EscapeString(offer.ShopID), formatRubles(offer.PriceKopecks))
+			fmt.Fprintf(&b, "%s — %s", offer.ShopID, formatRubles(offer.PriceKopecks))
 			if safeURL(offer.URL) {
 				fmt.Fprintf(&b, " — %s", offer.URL)
 			}
@@ -45,7 +44,7 @@ func RenderResult(q domain.SearchQuery, result search.Result) string {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(html.EscapeString(f.ShopID))
+			b.WriteString(f.ShopID)
 		}
 	}
 	return b.String()

@@ -8,12 +8,28 @@ import (
 	"time"
 )
 
-func TestRenderResultEscapesTextAndRejectsUnsafeURL(t *testing.T) {
-	q := domain.SearchQuery{Brand: "<b>Dior</b>", Name: "Sauvage", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail}
-	result := search.Result{Offers: []domain.Offer{{ShopID: "<script>", Brand: "<b>Dior</b>", Name: "Sauvage", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail, PriceKopecks: 100, InStock: true, URL: "javascript:alert(1)"}}}
+func TestRenderResultRejectsUnsafeURL(t *testing.T) {
+	q := domain.SearchQuery{Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail}
+	result := search.Result{Offers: []domain.Offer{{ShopID: "shop", Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail, PriceKopecks: 100, InStock: true, URL: "javascript:alert(1)"}}}
 	got := RenderResult(q, result)
-	if strings.Contains(got, "<script>") || strings.Contains(got, "javascript:") {
+	if strings.Contains(got, "javascript:") {
 		t.Fatal(got)
+	}
+}
+
+func TestRenderResultKeepsApostropheInPlainText(t *testing.T) {
+	query := domain.SearchQuery{
+		Brand:             "Kilian",
+		Name:              "Angel's Share",
+		Concentration:     domain.ConcentrationEDP,
+		VolumeMicroliters: 30000,
+		Kind:              domain.ProductKindRetail,
+	}
+
+	got := RenderResult(query, search.Result{})
+	wantPrefix := "Kilian Angel's Share · edp · 30 мл\n"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("result = %q, want prefix %q", got, wantPrefix)
 	}
 }
 
