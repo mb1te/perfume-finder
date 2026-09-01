@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestHandlerGuidesQueryAndRendersGroupedResults(t *testing.T) {
@@ -171,7 +172,8 @@ func TestConcurrentNewSearchCannotBeOverwrittenByCanceledDiscovery(t *testing.T)
 	started := make(chan struct{})
 	searcher := &supersedingSearcher{started: started}
 	sessions := newMemorySessions()
-	handler := NewHandler(&fakeMessenger{}, sessions, searcher)
+	messenger := &fakeMessenger{}
+	handler := NewHandler(messenger, sessions, searcher)
 	var wait sync.WaitGroup
 	wait.Add(1)
 	go func() { defer wait.Done(); _ = handler.HandleMessage(context.Background(), 12, "Old Query") }()
@@ -182,6 +184,38 @@ func TestConcurrentNewSearchCannotBeOverwrittenByCanceledDiscovery(t *testing.T)
 	wait.Wait()
 	if got := sessions.values[12].Query.Name; got != "New" {
 		t.Fatalf("session overwritten with %q", got)
+	}
+	if got := len(messenger.messages); got != 1 {
+		t.Fatalf("sent %d messages, want only the current search message", got)
+	}
+}
+
+func TestSlowSendDoesNotBlockAnotherChat(t *testing.T) {
+	blocking := newBlockingMessenger(42)
+	h := NewHandler(blocking, newMemorySessions(), fixedSearcher())
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- h.HandleMessage(context.Background(), 42, "Dior Sauvage EDP 100 мл")
+	}()
+	<-blocking.started
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- h.HandleMessage(context.Background(), 84, "Dior Sauvage EDP 100 мл")
+	}()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		close(blocking.release)
+		<-firstDone
+		t.Fatal("chat 84 blocked behind chat 42 I/O")
+	}
+	close(blocking.release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -217,6 +251,41 @@ func (s *supersedingSearcher) Search(ctx context.Context, query domain.SearchQue
 		return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "Old", Concentration: domain.ConcentrationEDP}}}
 	}
 	return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "New", Concentration: domain.ConcentrationEDP}}}
+}
+
+type blockingMessenger struct {
+	blockedChat int64
+	started     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+func newBlockingMessenger(chatID int64) *blockingMessenger {
+	return &blockingMessenger{
+		blockedChat: chatID,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (m *blockingMessenger) Send(ctx context.Context, chatID int64, _ Message) error {
+	if chatID != m.blockedChat {
+		return nil
+	}
+	m.once.Do(func() { close(m.started) })
+	select {
+	case <-m.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func fixedSearcher() Searcher {
+	return fakeSearcher{result: search.Result{Offers: []domain.Offer{{
+		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP,
+		VolumeMicroliters: 100000, Kind: domain.ProductKindRetail,
+	}}}}
 }
 
 type memorySessions struct{ values map[int64]storage.Session }
