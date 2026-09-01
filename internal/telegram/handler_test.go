@@ -5,6 +5,7 @@ import (
 	"parfumes_finder/internal/domain"
 	"parfumes_finder/internal/search"
 	"parfumes_finder/internal/storage"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +25,10 @@ func TestHandlerGuidesQueryAndRendersGroupedResults(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := h.HandleCallback(ctx, 42, buttonData(t, messenger, "|concentration|edt")); err != nil {
-		t.Fatal(err)
+	if sessions.values[42].Stage == "choose_concentration" {
+		if err := h.HandleCallback(ctx, 42, buttonData(t, messenger, "|concentration|edt")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := h.HandleCallback(ctx, 42, buttonData(t, messenger, "|volume|100000")); err != nil {
 		t.Fatal(err)
@@ -50,11 +53,85 @@ func TestHandlerDiscoversAmbiguousFragrancesBeforeConcentration(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := sessions.values[9]
-	if session.Stage != "choose_fragrance" || len(session.Options) != 2 {
+	if session.Stage != "choose_fragrance" || len(session.Candidates) != 2 {
 		t.Fatalf("session=%+v", session)
 	}
 	if !strings.Contains(m.messages[len(m.messages)-1].Buttons[0].Data, "|fragrance|") {
 		t.Fatal("fragrance choice missing")
+	}
+}
+
+func TestCandidatesCarryOnlyObservedConcentrations(t *testing.T) {
+	offers := []domain.Offer{
+		{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDP},
+		{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT},
+		{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationUnknown},
+		{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDP},
+	}
+	got := candidatesFromOffers(offers, domain.SearchQuery{})
+	want := []domain.Concentration{domain.ConcentrationEDT, domain.ConcentrationEDP}
+	if len(got) != 1 || !reflect.DeepEqual(got[0].Concentrations, want) {
+		t.Fatalf("candidates = %+v, want concentrations %v", got, want)
+	}
+}
+
+func TestSingleObservedConcentrationIsSelectedAutomatically(t *testing.T) {
+	messenger := &fakeMessenger{}
+	sessions := newMemorySessions()
+	h := NewHandler(messenger, sessions, fakeSearcher{result: search.Result{Offers: []domain.Offer{{
+		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP,
+	}}}})
+	if err := h.HandleMessage(context.Background(), 42, "Dior Sauvage"); err != nil {
+		t.Fatal(err)
+	}
+	if sessions.values[42].Query.Concentration != domain.ConcentrationEDP {
+		t.Fatalf("query = %+v", sessions.values[42].Query)
+	}
+	if strings.Contains(messenger.messages[len(messenger.messages)-1].Text, "Выбери концентрацию") {
+		t.Fatal("single concentration prompted the user")
+	}
+}
+
+func TestMultipleObservedConcentrationsAreTheOnlyButtons(t *testing.T) {
+	message := concentrationMessage("session-1", []domain.Concentration{
+		domain.ConcentrationElixir, domain.ConcentrationEDP,
+	})
+	got := make([]string, 0, len(message.Buttons))
+	for _, button := range message.Buttons {
+		got = append(got, button.Text)
+	}
+	if want := []string{"EDP", "Elixir"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buttons = %v, want %v", got, want)
+	}
+}
+
+func TestNoObservedConcentrationRequestsExplicitRetry(t *testing.T) {
+	messenger := &fakeMessenger{}
+	sessions := newMemorySessions()
+	h := NewHandler(messenger, sessions, fakeSearcher{})
+	session := storage.Session{ChatID: 42, ID: "session-1", Query: domain.SearchQuery{
+		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationUnknown,
+	}}
+	sessions.values[42] = session
+	if err := h.advance(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	got := messenger.messages[len(messenger.messages)-1]
+	if !strings.Contains(got.Text, "Dior Sauvage EDP") || len(got.Buttons) != 0 {
+		t.Fatalf("message = %+v", got)
+	}
+	if _, ok := sessions.values[42]; ok {
+		t.Fatal("retry session was not deleted")
+	}
+}
+
+func TestExplicitConcentrationWinsWhenDiscoveryHasAnotherValue(t *testing.T) {
+	candidates := candidatesFromOffers([]domain.Offer{{
+		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDT,
+	}}, domain.SearchQuery{Concentration: domain.ConcentrationEDP})
+	got := mergeCandidate(domain.SearchQuery{Concentration: domain.ConcentrationEDP}, candidates[0].Query)
+	if got.Concentration != domain.ConcentrationEDP {
+		t.Fatalf("concentration = %q", got.Concentration)
 	}
 }
 
@@ -75,7 +152,7 @@ func TestHandlerParsesCompleteMultiwordBrandQuery(t *testing.T) {
 func TestHandlerRejectsCallbackFromSupersededSession(t *testing.T) {
 	m := &fakeMessenger{}
 	sessions := newMemorySessions()
-	searcher := fakeSearcher{result: search.Result{Offers: []domain.Offer{{Brand: "Dior", Name: "Sauvage"}}}}
+	searcher := fakeSearcher{result: search.Result{Offers: []domain.Offer{{Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP}}}}
 	h := NewHandler(m, sessions, searcher)
 	ctx := context.Background()
 	_ = h.HandleMessage(ctx, 11, "Dior Sauvage")
@@ -137,9 +214,9 @@ func (s *supersedingSearcher) Search(ctx context.Context, query domain.SearchQue
 	if strings.HasPrefix(query.Raw, "Old") {
 		close(s.started)
 		<-ctx.Done()
-		return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "Old"}}}
+		return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "Old", Concentration: domain.ConcentrationEDP}}}
 	}
-	return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "New"}}}
+	return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "New", Concentration: domain.ConcentrationEDP}}}
 }
 
 type memorySessions struct{ values map[int64]storage.Session }

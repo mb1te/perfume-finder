@@ -57,23 +57,24 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 	result := h.searcher.Search(searchCtx, domain.SearchQuery{Raw: text})
 	_, err := h.completeOwned(chatID, sessionID, func() error {
 		explicit := domain.SearchQuery{Raw: text, Concentration: domain.ParseConcentration(text), VolumeMicroliters: domain.ParseVolumeMicroliters(text), Kind: domain.ClassifyKind(text)}
-		options := candidatesFromOffers(result.Offers, explicit)
-		if len(options) == 0 {
+		candidates := candidatesFromOffers(result.Offers, explicit)
+		if len(candidates) == 0 {
 			return h.messenger.Send(ctx, chatID, Message{Text: "Ничего не найдено. Уточни бренд и название аромата."})
 		}
-		session := storage.Session{ChatID: chatID, ID: sessionID, Query: explicit, Options: options}
-		if len(options) > 1 {
+		session := storage.Session{ChatID: chatID, ID: sessionID, Query: explicit, Candidates: candidates}
+		if len(candidates) > 1 {
 			session.Stage = "choose_fragrance"
 			if err := h.sessions.Save(ctx, session); err != nil {
 				return err
 			}
-			buttons := make([]Button, len(options))
-			for i, option := range options {
-				buttons[i] = Button{candidateLabel(option), callbackData(sessionID, "fragrance", strconv.Itoa(i))}
+			buttons := make([]Button, len(candidates))
+			for i, candidate := range candidates {
+				buttons[i] = Button{candidateLabel(candidate.Query), callbackData(sessionID, "fragrance", strconv.Itoa(i))}
 			}
 			return h.messenger.Send(ctx, chatID, Message{Text: "Выбери аромат", Buttons: buttons})
 		}
-		session.Query = mergeCandidate(explicit, options[0])
+		session.Query = mergeCandidate(explicit, candidates[0].Query)
+		session.Concentrations = candidates[0].Concentrations
 		return h.advance(ctx, session)
 	})
 	return err
@@ -98,10 +99,12 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 			return fmt.Errorf("invalid stage")
 		}
 		index, err := strconv.Atoi(value)
-		if err != nil || index < 0 || index >= len(session.Options) {
+		if err != nil || index < 0 || index >= len(session.Candidates) {
 			return fmt.Errorf("invalid fragrance")
 		}
-		session.Query = mergeCandidate(session.Query, session.Options[index])
+		selected := session.Candidates[index]
+		session.Query = mergeCandidate(session.Query, selected.Query)
+		session.Concentrations = selected.Concentrations
 		return h.advance(ctx, session)
 	case "concentration":
 		if session.Stage != "choose_concentration" {
@@ -153,8 +156,19 @@ func (h *Handler) advance(ctx context.Context, session storage.Session) error {
 	var message Message
 	switch {
 	case session.Query.Concentration == domain.ConcentrationUnknown:
-		session.Stage = "choose_concentration"
-		message = Message{Text: "Выбери концентрацию", Buttons: []Button{{"EDT", callbackData(session.ID, "concentration", "edt")}, {"EDP", callbackData(session.ID, "concentration", "edp")}, {"Parfum", callbackData(session.ID, "concentration", "parfum")}, {"Elixir", callbackData(session.ID, "concentration", "elixir")}}}
+		switch len(session.Concentrations) {
+		case 0:
+			_ = h.sessions.Delete(ctx, session.ChatID)
+			return h.messenger.Send(ctx, session.ChatID, Message{
+				Text: "Не удалось определить концентрацию. Повтори запрос целиком, например: Dior Sauvage EDP.",
+			})
+		case 1:
+			session.Query.Concentration = session.Concentrations[0]
+			return h.advance(ctx, session)
+		default:
+			session.Stage = "choose_concentration"
+			message = concentrationMessage(session.ID, session.Concentrations)
+		}
 	case session.Query.VolumeMicroliters == 0:
 		session.Stage = "choose_volume"
 		message = Message{Text: "Выбери объём", Buttons: []Button{{"30 мл", callbackData(session.ID, "volume", "30000")}, {"50 мл", callbackData(session.ID, "volume", "50000")}, {"60 мл", callbackData(session.ID, "volume", "60000")}, {"100 мл", callbackData(session.ID, "volume", "100000")}, {"200 мл", callbackData(session.ID, "volume", "200000")}}}
@@ -168,22 +182,69 @@ func (h *Handler) advance(ctx context.Context, session storage.Session) error {
 	return h.messenger.Send(ctx, session.ChatID, message)
 }
 
-func candidatesFromOffers(offers []domain.Offer, explicit domain.SearchQuery) []domain.SearchQuery {
-	byKey := map[string]domain.SearchQuery{}
+func candidatesFromOffers(offers []domain.Offer, explicit domain.SearchQuery) []domain.FragranceCandidate {
+	type aggregate struct {
+		query          domain.SearchQuery
+		concentrations map[domain.Concentration]struct{}
+	}
+	byKey := map[string]aggregate{}
 	for _, offer := range offers {
 		if offer.Brand == "" || offer.Name == "" {
 			continue
 		}
 		key := domain.NormalizeText(offer.Brand) + "|" + domain.NormalizeText(offer.Name) + "|" + domain.NormalizeText(offer.Edition)
-		candidate := domain.SearchQuery{Brand: offer.Brand, Name: offer.Name, Edition: offer.Edition, Concentration: explicit.Concentration, VolumeMicroliters: explicit.VolumeMicroliters, Kind: explicit.Kind}
+		candidate, ok := byKey[key]
+		if !ok {
+			candidate.query = domain.SearchQuery{Brand: offer.Brand, Name: offer.Name, Edition: offer.Edition, Concentration: explicit.Concentration, VolumeMicroliters: explicit.VolumeMicroliters, Kind: explicit.Kind}
+			candidate.concentrations = map[domain.Concentration]struct{}{}
+		}
+		if isRecognizedConcentration(offer.Concentration) {
+			candidate.concentrations[offer.Concentration] = struct{}{}
+		}
 		byKey[key] = candidate
 	}
-	result := make([]domain.SearchQuery, 0, len(byKey))
+	result := make([]domain.FragranceCandidate, 0, len(byKey))
 	for _, candidate := range byKey {
-		result = append(result, candidate)
+		concentrations := make([]domain.Concentration, 0, len(candidate.concentrations))
+		for concentration := range candidate.concentrations {
+			concentrations = append(concentrations, concentration)
+		}
+		result = append(result, domain.FragranceCandidate{
+			Query:          candidate.query,
+			Concentrations: domain.SortConcentrations(concentrations),
+		})
 	}
-	sort.Slice(result, func(i, j int) bool { return candidateLabel(result[i]) < candidateLabel(result[j]) })
+	sort.Slice(result, func(i, j int) bool { return candidateLabel(result[i].Query) < candidateLabel(result[j].Query) })
 	return result
+}
+
+func isRecognizedConcentration(value domain.Concentration) bool {
+	switch value {
+	case domain.ConcentrationEDT, domain.ConcentrationEDP, domain.ConcentrationParfum,
+		domain.ConcentrationExtrait, domain.ConcentrationCologne, domain.ConcentrationElixir:
+		return true
+	default:
+		return false
+	}
+}
+
+func concentrationMessage(sessionID string, concentrations []domain.Concentration) Message {
+	labels := map[domain.Concentration]string{
+		domain.ConcentrationEDT:     "EDT",
+		domain.ConcentrationEDP:     "EDP",
+		domain.ConcentrationParfum:  "Parfum",
+		domain.ConcentrationExtrait: "Extrait",
+		domain.ConcentrationCologne: "Cologne",
+		domain.ConcentrationElixir:  "Elixir",
+	}
+	values := domain.SortConcentrations(concentrations)
+	buttons := make([]Button, 0, len(values))
+	for _, concentration := range values {
+		if label, ok := labels[concentration]; ok {
+			buttons = append(buttons, Button{label, callbackData(sessionID, "concentration", string(concentration))})
+		}
+	}
+	return Message{Text: "Выбери концентрацию", Buttons: buttons}
 }
 func mergeCandidate(explicit, candidate domain.SearchQuery) domain.SearchQuery {
 	candidate.Raw = explicit.Raw
