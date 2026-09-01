@@ -159,6 +159,60 @@ func TestBuildSearchURLIncludesExactRequestFields(t *testing.T) {
 	}
 }
 
+func TestParseSelectedProductRejectsRedirectToDifferentProduct(t *testing.T) {
+	markup, err := os.ReadFile("testdata/product-sauvage-edp.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{
+		URL:           "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html",
+		Brand:         "Dior",
+		Name:          "sauvage",
+		Concentration: domain.ConcentrationEDP,
+	}
+	redirected := "https://www.fragrantica.ru/perfume/Dior/Sauvage-2015-Eau-de-Toilette-31861.html"
+
+	if product, ok, err := parseSelectedProduct(browserRequest, candidate, redirected, string(markup)); err != nil || ok {
+		t.Fatalf("redirected product = %+v, ok=%v, err=%v", product, ok, err)
+	}
+}
+
+func TestParseSelectedProductRejectsCanonicalForDifferentProduct(t *testing.T) {
+	markup, err := os.ReadFile("testdata/product-sauvage-edp.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{
+		URL:           "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html",
+		Brand:         "Dior",
+		Name:          "sauvage",
+		Concentration: domain.ConcentrationEDP,
+	}
+	markup = []byte(strings.ReplaceAll(string(markup), "Sauvage-Eau-de-Parfum-48100.html", "Sauvage-2015-Eau-de-Toilette-31861.html"))
+
+	if product, ok, err := parseSelectedProduct(browserRequest, candidate, candidate.URL, string(markup)); err != nil || ok {
+		t.Fatalf("mismatched canonical product = %+v, ok=%v, err=%v", product, ok, err)
+	}
+}
+
+func TestParseSelectedProductAcceptsMatchingCandidateFinalAndCanonicalProduct(t *testing.T) {
+	markup, err := os.ReadFile("testdata/product-sauvage-edp.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{
+		URL:           "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html",
+		Brand:         "Dior",
+		Name:          "sauvage",
+		Concentration: domain.ConcentrationEDP,
+	}
+
+	product, ok, err := parseSelectedProduct(browserRequest, candidate, candidate.URL, string(markup))
+	if err != nil || !ok || product.SourceURL != candidate.URL {
+		t.Fatalf("matching product = %+v, ok=%v, err=%v", product, ok, err)
+	}
+}
+
 func TestRenderCardHTMLEscapesProductMetadata(t *testing.T) {
 	product := Product{
 		Title:    `<script>alert("title")</script>`,
@@ -175,6 +229,32 @@ func TestRenderCardHTMLEscapesProductMetadata(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("card HTML missing %q: %s", want, got)
 		}
+	}
+}
+
+func TestRenderCardHTMLBoundsExternalMetadataBeforeBuildingCard(t *testing.T) {
+	accords := make([]enrichment.Accord, 20)
+	for index := range accords {
+		accords[index] = enrichment.Accord{
+			Name:  strings.Repeat("я", 65) + "ACCORD_TAIL",
+			Color: "#d8c69a",
+			Width: 100,
+		}
+	}
+	got := renderCardHTML(Product{
+		Title:    strings.Repeat("я", 130) + "TITLE_TAIL",
+		ImageURL: "https://fimgs.net/image.jpg",
+		Accords:  accords,
+	})
+
+	if strings.Contains(got, "TITLE_TAIL") || strings.Contains(got, "ACCORD_TAIL") {
+		t.Fatalf("unbounded metadata reached render HTML")
+	}
+	if count := strings.Count(got, `class="accord"`); count != 16 {
+		t.Fatalf("rendered accord count = %d, want 16", count)
+	}
+	if !strings.Contains(got, strings.Repeat("я", 128)) || !strings.Contains(got, strings.Repeat("я", 64)) {
+		t.Fatal("UTF-8 metadata was not truncated at the byte-safe boundary")
 	}
 }
 

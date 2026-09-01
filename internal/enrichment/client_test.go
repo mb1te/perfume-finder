@@ -216,7 +216,11 @@ func TestHTTPClientRejectsUnsafeFragranticaSourceURL(t *testing.T) {
 		"http://www.fragrantica.ru/perfume/Dior/Sauvage-31861.html",
 		"https://user@www.fragrantica.ru/perfume/Dior/Sauvage-31861.html",
 		"https://www.fragrantica.ru:444/perfume/Dior/Sauvage-31861.html",
+		"https://www.fragrantica.ru./perfume/Dior/Sauvage-31861.html",
 		"https://www.fragrantica.ru/perfume/Dior/Sauvage-31861.html?tracking=1",
+		"https://www.fragrantica.ru/perfume/Dior/../Sauvage-31861.html",
+		"https://www.fragrantica.ru/perfume/Dior/%2e%2e/Sauvage-31861.html",
+		"https://www.fragrantica.ru/perfume//Dior/Sauvage-31861.html",
 		"https://www.fragrantica.ru/search/?query=Sauvage",
 	} {
 		t.Run(sourceURL, func(t *testing.T) {

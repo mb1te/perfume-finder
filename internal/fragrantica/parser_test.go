@@ -146,6 +146,25 @@ func TestParseRejectsAccessChallenge(t *testing.T) {
 	}
 }
 
+func TestParseRejectsCommonAccessChallengeMarkers(t *testing.T) {
+	base, err := url.Parse("https://www.fragrantica.ru/search/?query=Dior+Sauvage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`<title>CAPTCHA</title>`,
+		`<div class="hcaptcha-box"></div>`,
+		`<div class="g-recaptcha"></div>`,
+		`<h1>Verify You Are Human</h1>`,
+	} {
+		t.Run(marker, func(t *testing.T) {
+			if _, err := ParseSearch(strings.NewReader(marker), base); !errors.Is(err, ErrAccessChallenge) {
+				t.Fatalf("marker %q error = %v", marker, err)
+			}
+		})
+	}
+}
+
 func parseSearchFixture(t *testing.T, name string) []Candidate {
 	t.Helper()
 	file, err := os.Open(filepath.Join("testdata", name))

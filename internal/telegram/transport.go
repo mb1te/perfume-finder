@@ -63,7 +63,7 @@ func (t *Transport) Send(ctx context.Context, chatID int64, message Message) err
 }
 func (t *Transport) onMessage(ctx context.Context, _ *bot.Bot, update *models.Update) {
 	if update.Message != nil {
-		_ = t.handler.HandleMessage(ctx, update.Message.Chat.ID, update.Message.Text)
+		_ = t.handler.HandleMessageUpdate(ctx, update.ID, update.Message.Chat.ID, update.Message.Text)
 	}
 }
 func (t *Transport) onCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -74,6 +74,6 @@ func (t *Transport) onCallback(ctx context.Context, b *bot.Bot, update *models.U
 	if update.CallbackQuery.Message.Message != nil {
 		chatID = update.CallbackQuery.Message.Message.Chat.ID
 	}
-	_ = t.handler.HandleCallback(ctx, chatID, update.CallbackQuery.Data)
+	_ = t.handler.HandleCallbackUpdate(ctx, update.ID, chatID, update.CallbackQuery.Data)
 	_, _ = b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
 }

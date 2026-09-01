@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"parfumes_finder/internal/domain"
@@ -40,30 +41,44 @@ type activeSearch struct {
 	token  string
 	cancel context.CancelFunc
 }
+type chatOperations struct {
+	mu             sync.Mutex
+	admitted       bool
+	latestUpdateID int64
+	active         activeSearch
+}
 type Handler struct {
-	messenger Messenger
-	sessions  Sessions
-	searcher  Searcher
-	enricher  enrichment.Service
-	limiters  *userLimiters
-	activeMu  sync.Mutex
-	active    map[int64]activeSearch
+	messenger         Messenger
+	sessions          Sessions
+	searcher          Searcher
+	enricher          enrichment.Service
+	limiters          *userLimiters
+	operations        sync.Map
+	syntheticUpdateID atomic.Int64
 }
 
 func NewHandler(m Messenger, sessions Sessions, searcher Searcher, enricher enrichment.Service) *Handler {
-	return &Handler{messenger: m, sessions: sessions, searcher: searcher, enricher: enricher, limiters: newUserLimiters(), active: map[int64]activeSearch{}}
+	return &Handler{messenger: m, sessions: sessions, searcher: searcher, enricher: enricher, limiters: newUserLimiters()}
 }
 
 func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) error {
+	return h.HandleMessageUpdate(ctx, h.syntheticUpdateID.Add(1), chatID, text)
+}
+
+func (h *Handler) HandleMessageUpdate(ctx context.Context, updateID, chatID int64, text string) error {
+	operationCtx, operationToken, admitted := h.beginUpdate(ctx, chatID, updateID)
+	if !admitted {
+		return nil
+	}
+	defer h.finishOwned(chatID, operationToken)
 	if !h.limiters.Allow(chatID) {
-		h.cancelActive(chatID)
-		return h.messenger.Send(ctx, chatID, Message{Text: "Слишком много запросов. Подожди несколько секунд."})
+		if !h.isOwned(chatID, operationToken) {
+			return nil
+		}
+		return h.messenger.Send(operationCtx, chatID, Message{Text: "Слишком много запросов. Подожди несколько секунд."})
 	}
 	sessionID := newSessionID()
-	operationToken := newOperationToken()
-	searchCtx := h.beginSearch(ctx, chatID, operationToken)
-	defer h.finishOwned(chatID, operationToken)
-	result := h.searcher.Search(searchCtx, domain.SearchQuery{Raw: text})
+	result := h.searcher.Search(operationCtx, domain.SearchQuery{Raw: text})
 	if !h.isOwned(chatID, operationToken) {
 		return nil
 	}
@@ -73,7 +88,7 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		return h.messenger.Send(searchCtx, chatID, Message{Text: "Ничего не найдено. Уточни бренд и название аромата."})
+		return h.messenger.Send(operationCtx, chatID, Message{Text: "Ничего не найдено. Уточни бренд и название аромата."})
 	}
 	session := storage.Session{ChatID: chatID, ID: sessionID, Query: explicit, Candidates: candidates}
 	if len(candidates) > 1 {
@@ -81,7 +96,10 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		if err := h.sessions.Save(searchCtx, session); err != nil {
+		if err := h.sessions.Save(operationCtx, session); err != nil {
+			if !h.isOwned(chatID, operationToken) {
+				return nil
+			}
 			return err
 		}
 		buttons := make([]Button, len(candidates))
@@ -91,19 +109,32 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		return h.messenger.Send(searchCtx, chatID, Message{Text: "Выбери аромат", Buttons: buttons})
+		return h.messenger.Send(operationCtx, chatID, Message{Text: "Выбери аромат", Buttons: buttons})
 	}
 	session.Query = mergeCandidate(explicit, candidates[0].Query)
 	session.Concentrations = candidates[0].Concentrations
-	return h.advanceOwned(searchCtx, session, operationToken)
+	return h.advanceOwned(operationCtx, session, operationToken)
 }
 
 func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string) error {
+	return h.HandleCallbackUpdate(ctx, h.syntheticUpdateID.Add(1), chatID, data)
+}
+
+func (h *Handler) HandleCallbackUpdate(ctx context.Context, updateID, chatID int64, data string) error {
 	parts := strings.Split(data, "|")
 	if len(parts) != 3 {
 		return fmt.Errorf("invalid callback")
 	}
-	session, ok, err := h.sessions.Load(ctx, chatID)
+	operationCtx, operationToken, admitted := h.beginUpdate(ctx, chatID, updateID)
+	if !admitted {
+		return nil
+	}
+	defer h.finishOwned(chatID, operationToken)
+
+	session, ok, err := h.sessions.Load(operationCtx, chatID)
+	if !h.isOwned(chatID, operationToken) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -123,13 +154,21 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		selected := session.Candidates[index]
 		session.Query = mergeCandidate(session.Query, selected.Query)
 		session.Concentrations = selected.Concentrations
-		return h.advance(ctx, session)
+		return h.advanceOwned(operationCtx, session, operationToken)
 	case "concentration":
 		if session.Stage != "choose_concentration" {
 			return fmt.Errorf("invalid stage")
 		}
-		session.Query.Concentration = domain.Concentration(value)
-		return h.advance(ctx, session)
+		if len(session.Concentrations) == 0 {
+			session.Query.Concentration = domain.ConcentrationUnknown
+			return h.advanceOwned(operationCtx, session, operationToken)
+		}
+		concentration := domain.Concentration(value)
+		if !isRecognizedConcentration(concentration) || !containsConcentration(session.Concentrations, concentration) {
+			return fmt.Errorf("invalid concentration")
+		}
+		session.Query.Concentration = concentration
+		return h.advanceOwned(operationCtx, session, operationToken)
 	case "volume":
 		if session.Stage != "choose_volume" {
 			return fmt.Errorf("invalid stage")
@@ -139,27 +178,30 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 			return err
 		}
 		session.Query.VolumeMicroliters = volume
-		return h.advance(ctx, session)
+		return h.advanceOwned(operationCtx, session, operationToken)
 	case "kind":
-		if session.Stage != "choose_kind" {
+		if session.Stage != "choose_kind" && session.Stage != "searching" {
 			return fmt.Errorf("invalid stage")
 		}
 		session.Query.Kind = domain.ProductKind(value)
 		session.Stage = "searching"
-		operationToken := newOperationToken()
-		searchCtx := h.beginSearch(ctx, chatID, operationToken)
-		defer h.finishOwned(chatID, operationToken)
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		if err := h.sessions.Save(searchCtx, session); err != nil {
+		if err := h.sessions.Save(operationCtx, session); err != nil {
+			if !h.isOwned(chatID, operationToken) {
+				return nil
+			}
 			return err
 		}
-		result := h.searcher.Search(searchCtx, session.Query)
+		result := h.searcher.Search(operationCtx, session.Query)
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		current, ok, err := h.sessions.Load(searchCtx, chatID)
+		current, ok, err := h.sessions.Load(operationCtx, chatID)
+		if !h.isOwned(chatID, operationToken) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -169,19 +211,22 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		if err := h.sessions.Delete(searchCtx, chatID); err != nil {
+		if err := h.sessions.Delete(operationCtx, chatID); err != nil {
+			if !h.isOwned(chatID, operationToken) {
+				return nil
+			}
 			return err
 		}
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		if err := h.messenger.Send(searchCtx, chatID, Message{Text: RenderResult(session.Query, result)}); err != nil {
+		if err := h.messenger.Send(operationCtx, chatID, Message{Text: RenderResult(session.Query, result)}); err != nil {
 			return err
 		}
-		if h.enricher == nil || searchCtx.Err() != nil || !h.isOwned(chatID, operationToken) {
+		if h.enricher == nil || operationCtx.Err() != nil || !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		return h.sendEnrichment(searchCtx, chatID, session.Query, operationToken)
+		return h.sendEnrichment(operationCtx, chatID, session.Query, operationToken)
 	default:
 		return fmt.Errorf("unknown callback")
 	}
@@ -324,6 +369,15 @@ func isRecognizedConcentration(value domain.Concentration) bool {
 	}
 }
 
+func containsConcentration(values []domain.Concentration, wanted domain.Concentration) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func concentrationMessage(sessionID string, concentrations []domain.Concentration) Message {
 	labels := map[domain.Concentration]string{
 		domain.ConcentrationEDT:     "EDT",
@@ -370,43 +424,54 @@ func newRandomID() string {
 	}
 	return hex.EncodeToString(buffer)
 }
-func (h *Handler) beginSearch(parent context.Context, chatID int64, token string) context.Context {
-	h.activeMu.Lock()
-	defer h.activeMu.Unlock()
-	if previous, ok := h.active[chatID]; ok {
-		previous.cancel()
+func (h *Handler) beginUpdate(parent context.Context, chatID, updateID int64) (context.Context, string, bool) {
+	operations := h.operationsFor(chatID)
+	token := newOperationToken()
+
+	operations.mu.Lock()
+	defer operations.mu.Unlock()
+	if operations.admitted && updateID <= operations.latestUpdateID {
+		return nil, "", false
+	}
+	operations.admitted = true
+	operations.latestUpdateID = updateID
+	if operations.active.cancel != nil {
+		operations.active.cancel()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	h.active[chatID] = activeSearch{token, cancel}
-	return ctx
+	operations.active = activeSearch{token: token, cancel: cancel}
+	return ctx, token, true
 }
 
-func (h *Handler) cancelActive(chatID int64) {
-	h.activeMu.Lock()
-	current, ok := h.active[chatID]
-	if ok {
-		delete(h.active, chatID)
-	}
-	h.activeMu.Unlock()
-	if ok {
-		current.cancel()
-	}
+func (h *Handler) operationsFor(chatID int64) *chatOperations {
+	operations, _ := h.operations.LoadOrStore(chatID, &chatOperations{})
+	return operations.(*chatOperations)
 }
 
 func (h *Handler) isOwned(chatID int64, token string) bool {
-	h.activeMu.Lock()
-	defer h.activeMu.Unlock()
-	current, ok := h.active[chatID]
-	return ok && current.token == token
+	value, ok := h.operations.Load(chatID)
+	if !ok {
+		return false
+	}
+	operations := value.(*chatOperations)
+	operations.mu.Lock()
+	defer operations.mu.Unlock()
+	return operations.active.token == token && operations.active.cancel != nil
 }
 
 func (h *Handler) finishOwned(chatID int64, token string) {
-	h.activeMu.Lock()
-	defer h.activeMu.Unlock()
-	current, ok := h.active[chatID]
-	if !ok || current.token != token {
+	value, ok := h.operations.Load(chatID)
+	if !ok {
 		return
 	}
-	delete(h.active, chatID)
-	current.cancel()
+	operations := value.(*chatOperations)
+	operations.mu.Lock()
+	if operations.active.token != token || operations.active.cancel == nil {
+		operations.mu.Unlock()
+		return
+	}
+	cancel := operations.active.cancel
+	operations.active = activeSearch{}
+	operations.mu.Unlock()
+	cancel()
 }

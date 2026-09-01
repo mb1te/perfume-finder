@@ -93,12 +93,15 @@ func (cache *EnrichmentCache) Put(ctx context.Context, request enrichment.Reques
 	}
 
 	var total int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(length(image_png)), 0) FROM fragrantica_enrichment_cache`).Scan(&total); err != nil {
+	if err := tx.QueryRowContext(ctx, `
+        SELECT COALESCE(SUM(length(source_url) + length(title) + length(accords_json) + length(image_png)), 0)
+        FROM fragrantica_enrichment_cache
+    `).Scan(&total); err != nil {
 		return fmt.Errorf("measure enrichment cache: %w", err)
 	}
 	if total > maxEnrichmentCacheSize {
 		rows, err := tx.QueryContext(ctx, `
-            SELECT cache_key, length(image_png)
+			SELECT cache_key, length(source_url) + length(title) + length(accords_json) + length(image_png)
             FROM fragrantica_enrichment_cache
             ORDER BY created_at ASC, cache_key ASC
         `)

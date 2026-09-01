@@ -54,9 +54,9 @@ func TestEnrichmentCacheRejectsPNGOverFiveMiB(t *testing.T) {
 	}
 }
 
-func TestEnrichmentCachePrunesOldestImagesAfterCrossingSizeLimit(t *testing.T) {
+func TestEnrichmentCachePrunesOldestPayloadsAfterCrossingSizeLimit(t *testing.T) {
 	const imageSize = 4 << 20
-	const rows = 65 // 260 MiB; pruning must leave no more than 192 MiB.
+	const rows = 64 // Images are exactly 256 MiB; metadata must make the full payload cross the limit.
 
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	db := openTestDB(t)
@@ -64,21 +64,30 @@ func TestEnrichmentCachePrunesOldestImagesAfterCrossingSizeLimit(t *testing.T) {
 	image := make([]byte, imageSize)
 	for i := 0; i < rows; i++ {
 		request := enrichment.Request{Brand: "brand", Name: fmt.Sprintf("perfume-%d", i), Concentration: domain.ConcentrationEDP}
-		if err := cache.Put(context.Background(), request, enrichment.Card{PNG: image}); err != nil {
+		card := enrichment.Card{
+			SourceURL: "https://www.fragrantica.ru/perfume/Brand/Perfume-12345.html",
+			Title:     "Perfume",
+			Accords:   []enrichment.Accord{{Name: "woody", Color: "#aabbcc", Width: 80}},
+			PNG:       image,
+		}
+		if err := cache.Put(context.Background(), request, card); err != nil {
 			t.Fatalf("Put() row %d: %v", i, err)
 		}
 		now = now.Add(time.Nanosecond)
 	}
 
 	var total int64
-	if err := db.QueryRow(`SELECT COALESCE(SUM(length(image_png)), 0) FROM fragrantica_enrichment_cache`).Scan(&total); err != nil {
+	if err := db.QueryRow(`
+        SELECT COALESCE(SUM(length(source_url) + length(title) + length(accords_json) + length(image_png)), 0)
+        FROM fragrantica_enrichment_cache
+    `).Scan(&total); err != nil {
 		t.Fatal(err)
 	}
 	if total > 192<<20 {
-		t.Fatalf("cached image total = %d, want at most %d", total, 192<<20)
+		t.Fatalf("cached payload total = %d, want at most %d", total, 192<<20)
 	}
 
-	for i := 0; i < rows-48; i++ {
+	for i := 0; i < rows-47; i++ {
 		_, ok, err := cache.Get(context.Background(), enrichment.Request{Brand: "brand", Name: fmt.Sprintf("perfume-%d", i), Concentration: domain.ConcentrationEDP})
 		if err != nil || ok {
 			t.Fatalf("old row %d remains: ok=%v err=%v", i, ok, err)

@@ -151,7 +151,7 @@ func enrichWithBrowser(ctx, tabCtx context.Context, baseGuard NetworkGuard, requ
 		return enrichment.Card{}, false, browserContextError(ctx, err)
 	}
 
-	searchHTML, err := navigateAndCaptureHTML(tabCtx, guard, interceptor, searchURL)
+	searchHTML, _, err := navigateAndCaptureHTML(tabCtx, guard, interceptor, searchURL)
 	if err != nil {
 		return enrichment.Card{}, false, browserContextError(ctx, err)
 	}
@@ -168,16 +168,15 @@ func enrichWithBrowser(ctx, tabCtx context.Context, baseGuard NetworkGuard, requ
 		return enrichment.Card{}, false, err
 	}
 
-	productHTML, err := navigateAndCaptureHTML(tabCtx, guard, interceptor, candidate.URL)
+	productHTML, productLocation, err := navigateAndCaptureHTML(tabCtx, guard, interceptor, candidate.URL)
 	if err != nil {
 		return enrichment.Card{}, false, browserContextError(ctx, err)
 	}
-	productBase, _ := url.Parse(candidate.URL)
-	product, err := ParseProduct(strings.NewReader(productHTML), productBase)
+	product, ok, err := parseSelectedProduct(request, candidate, productLocation, productHTML)
 	if err != nil {
 		return enrichment.Card{}, false, err
 	}
-	if product.SourceURL == "" || product.ImageURL == "" {
+	if !ok {
 		return enrichment.Card{}, false, nil
 	}
 	if err := allowRawURL(ctx, guard, product.SourceURL); err != nil {
@@ -249,9 +248,9 @@ func allowRawURL(ctx context.Context, guard *lookupGuard, raw string) error {
 	return guard.Allow(ctx, target)
 }
 
-func navigateAndCaptureHTML(ctx context.Context, guard *lookupGuard, interceptor *requestInterceptor, raw string) (string, error) {
+func navigateAndCaptureHTML(ctx context.Context, guard *lookupGuard, interceptor *requestInterceptor, raw string) (string, string, error) {
 	if err := allowRawURL(ctx, guard, raw); err != nil {
-		return "", err
+		return "", "", err
 	}
 	var markup, location string
 	if err := chromedp.Run(ctx,
@@ -260,14 +259,38 @@ func navigateAndCaptureHTML(ctx context.Context, guard *lookupGuard, interceptor
 		chromedp.OuterHTML("html", &markup, chromedp.ByQuery),
 	); err != nil {
 		if unsafeErr := interceptor.navigationError(); unsafeErr != nil {
-			return "", unsafeErr
+			return "", "", unsafeErr
 		}
-		return "", err
+		return "", "", err
 	}
 	if err := allowRawURL(ctx, guard, location); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return markup, nil
+	return markup, location, nil
+}
+
+func parseSelectedProduct(request enrichment.Request, candidate Candidate, finalURL, markup string) (Product, bool, error) {
+	if _, ok := SelectExact(request, []Candidate{candidate}); !ok {
+		return Product{}, false, nil
+	}
+	candidateID, candidateOK := terminalProductID(candidate.URL)
+	finalID, finalOK := terminalProductID(finalURL)
+	if !candidateOK || !finalOK || candidateID != finalID {
+		return Product{}, false, nil
+	}
+	productBase, err := url.Parse(finalURL)
+	if err != nil {
+		return Product{}, false, nil
+	}
+	product, err := ParseProduct(strings.NewReader(markup), productBase)
+	if err != nil {
+		return Product{}, false, err
+	}
+	canonicalID, canonicalOK := terminalProductID(product.SourceURL)
+	if !canonicalOK || canonicalID != candidateID || product.ImageURL == "" {
+		return Product{}, false, nil
+	}
+	return product, true, nil
 }
 
 type requestInterceptor struct {
@@ -346,6 +369,7 @@ func setDocumentContent(markup string) chromedp.Action {
 }
 
 func renderCardHTML(product Product) string {
+	product = boundedProductMetadata(product)
 	var accords bytes.Buffer
 	for _, accord := range product.Accords {
 		width := max(0, min(accord.Width, 100))
@@ -361,4 +385,17 @@ func renderCardHTML(product Product) string {
 		.bottle{display:flex;align-items:center;justify-content:center}.bottle img{display:block;max-width:220px;max-height:340px;object-fit:contain}
 		h1{font-size:30px;line-height:1.15;margin:0 0 24px}.accord{margin:0 0 13px}.accord-name{font-size:16px;margin:0 0 5px}.accord-track{height:17px;background:#eee;border-radius:9px;overflow:hidden}.accord-fill{height:100%;border-radius:9px}
 		</style></head><body><article id="perfume-finder-card"><div class="bottle"><img src="` + html.EscapeString(product.ImageURL) + `" alt=""></div><section><h1>` + html.EscapeString(product.Title) + `</h1>` + accords.String() + `</section></article></body></html>`
+}
+
+func boundedProductMetadata(product Product) Product {
+	product.Title = truncateUTF8(product.Title, 256)
+	accordCount := min(len(product.Accords), 16)
+	accords := make([]enrichment.Accord, accordCount)
+	for index := range accordCount {
+		accords[index] = product.Accords[index]
+		accords[index].Name = truncateUTF8(accords[index].Name, 128)
+		accords[index].Color = truncateUTF8(accords[index].Color, 128)
+	}
+	product.Accords = accords
+	return product
 }

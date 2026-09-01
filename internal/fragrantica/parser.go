@@ -146,7 +146,9 @@ func hasAccessChallenge(payload []byte) bool {
 		strings.Contains(content, "checking your browser") ||
 		strings.Contains(content, "attention required") ||
 		strings.Contains(content, "challenge-platform") ||
-		strings.Contains(content, "cf-chl-")
+		strings.Contains(content, "cf-chl-") ||
+		strings.Contains(content, "captcha") ||
+		strings.Contains(content, "verify you are human")
 }
 
 func normalizedBaseName(title, brand, edition string) string {
@@ -227,6 +229,24 @@ func safeProductURL(raw string) string {
 	u.Fragment = ""
 	u.RawFragment = ""
 	return u.String()
+}
+
+func terminalProductID(raw string) (string, bool) {
+	safe := safeProductURL(raw)
+	if safe == "" {
+		return "", false
+	}
+	u, err := url.Parse(safe)
+	if err != nil {
+		return "", false
+	}
+	stem := strings.TrimSuffix(u.Path, ".html")
+	separator := strings.LastIndexByte(stem, '-')
+	if separator < 0 || separator == len(stem)-1 {
+		return "", false
+	}
+	id := stem[separator+1:]
+	return id, digitsOnly.MatchString(id)
 }
 
 func safeImageURL(raw string) string {

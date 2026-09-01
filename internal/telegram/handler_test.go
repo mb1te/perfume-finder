@@ -7,6 +7,7 @@ import (
 	"parfumes_finder/internal/enrichment"
 	"parfumes_finder/internal/search"
 	"parfumes_finder/internal/storage"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -128,6 +129,62 @@ func TestNoObservedConcentrationRequestsExplicitRetry(t *testing.T) {
 	}
 }
 
+func TestPersistedLegacyConcentrationCallbackRequestsExplicitRetry(t *testing.T) {
+	db, err := storage.Open(filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+        INSERT INTO telegram_sessions(chat_id, stage, query_json, updated_at)
+        VALUES(?, ?, ?, ?)
+    `, 42, "choose_concentration", `{"id":"legacy-session","query":{"Brand":"Dior","Name":"Sauvage"}}`, time.Now().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+
+	messenger := &fakeMessenger{}
+	sessions := storage.NewSessions(db)
+	h := NewHandler(messenger, sessions, fakeSearcher{}, nil)
+	if err := h.HandleCallback(context.Background(), 42, "legacy-session|concentration|edp"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, err := sessions.Load(context.Background(), 42); err != nil || ok {
+		t.Fatalf("legacy session after callback: ok=%v err=%v", ok, err)
+	}
+	messages := messenger.snapshot()
+	if len(messages) != 1 || !strings.Contains(messages[0].Text, "Dior Sauvage EDP") || len(messages[0].Buttons) != 0 {
+		t.Fatalf("retry messages = %+v", messages)
+	}
+}
+
+func TestConcentrationCallbackRejectsUnobservedAndUnrecognizedValues(t *testing.T) {
+	for _, value := range []string{"edt", "bogus"} {
+		t.Run(value, func(t *testing.T) {
+			sessions := newMemorySessions()
+			sessions.values[42] = storage.Session{
+				ChatID: 42,
+				ID:     "session-1",
+				Stage:  "choose_concentration",
+				Query: domain.SearchQuery{
+					Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationUnknown,
+				},
+				Concentrations: []domain.Concentration{
+					domain.ConcentrationEDP,
+				},
+			}
+			h := NewHandler(&fakeMessenger{}, sessions, fakeSearcher{}, nil)
+
+			if err := h.HandleCallback(context.Background(), 42, "session-1|concentration|"+value); err == nil {
+				t.Fatal("invalid concentration callback accepted")
+			}
+			if got := sessions.values[42].Query.Concentration; got != domain.ConcentrationUnknown {
+				t.Fatalf("concentration mutated to %q", got)
+			}
+		})
+	}
+}
+
 func TestExplicitConcentrationWinsWhenDiscoveryHasAnotherValue(t *testing.T) {
 	candidates := candidatesFromOffers([]domain.Offer{{
 		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDT,
@@ -211,29 +268,35 @@ func TestRepeatedKindCallbackSupersedesPriorSearchOperation(t *testing.T) {
 	handler := NewHandler(messenger, sessions, searcher, nil)
 	callback := "session-1|kind|retail"
 
-	done := make(chan error, 2)
+	firstDone := make(chan error, 1)
 	go func() {
-		done <- handler.HandleCallback(context.Background(), 77, callback)
-	}()
-	go func() {
-		done <- handler.HandleCallback(context.Background(), 77, callback)
+		firstDone <- handler.HandleCallbackUpdate(context.Background(), 100, 77, callback)
 	}()
 	<-searcher.firstStarted
-	secondCtx := <-searcher.secondStarted
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- handler.HandleCallbackUpdate(context.Background(), 101, 77, callback)
+	}()
 
 	select {
-	case err := <-done:
+	case err := <-firstDone:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
-		close(searcher.releaseSecond)
-		<-done
 		t.Fatal("superseded first callback did not return")
+	}
+	var secondCtx context.Context
+	select {
+	case secondCtx = <-searcher.secondStarted:
+	case err := <-secondDone:
+		t.Fatalf("current callback returned before starting search: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("current callback did not start search")
 	}
 	secondCanceledByFirst := secondCtx.Err() != nil
 	close(searcher.releaseSecond)
-	if err := <-done; err != nil {
+	if err := <-secondDone; err != nil {
 		t.Fatal(err)
 	}
 
@@ -245,6 +308,72 @@ func TestRepeatedKindCallbackSupersedesPriorSearchOperation(t *testing.T) {
 	}
 	if got := messenger.messages[0].Text; !strings.Contains(got, "current-shop") || strings.Contains(got, "stale-shop") {
 		t.Fatalf("sent stale callback result: %q", got)
+	}
+}
+
+func TestOlderCallbackCannotCancelNewerMessageAfterDelayedSessionLoad(t *testing.T) {
+	sessions := newDelayedLoadSessions(storage.Session{
+		ChatID: 42,
+		ID:     "old-session",
+		Stage:  "choose_kind",
+		Query: domain.SearchQuery{
+			Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP,
+			VolumeMicroliters: 100000,
+		},
+	})
+	searcher := &callbackMessageOrderingSearcher{
+		messageStarted:  make(chan struct{}),
+		releaseMessage:  make(chan struct{}),
+		messageCanceled: make(chan struct{}, 1),
+		callbackCalled:  make(chan struct{}, 1),
+	}
+	h := NewHandler(&fakeMessenger{}, sessions, searcher, nil)
+
+	callbackDone := make(chan error, 1)
+	go func() {
+		callbackDone <- h.HandleCallbackUpdate(context.Background(), 100, 42, "old-session|kind|retail")
+	}()
+	<-sessions.loadStarted
+
+	messageDone := make(chan error, 1)
+	go func() {
+		messageDone <- h.HandleMessageUpdate(context.Background(), 101, 42, "New Query")
+	}()
+	<-searcher.messageStarted
+	close(sessions.releaseLoad)
+
+	select {
+	case err := <-callbackDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(searcher.releaseMessage)
+		<-messageDone
+		t.Fatal("superseded callback did not return after its session load completed")
+	}
+	select {
+	case <-searcher.messageCanceled:
+		close(searcher.releaseMessage)
+		<-messageDone
+		t.Fatal("older callback canceled the newer message search")
+	default:
+	}
+	select {
+	case <-searcher.callbackCalled:
+		close(searcher.releaseMessage)
+		<-messageDone
+		t.Fatal("superseded callback started its search")
+	default:
+	}
+
+	close(searcher.releaseMessage)
+	if err := <-messageDone; err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := sessions.Load(context.Background(), 42)
+	if err != nil || !ok || got.Query.Name != "New" {
+		t.Fatalf("current session = %+v, ok=%v, err=%v", got, ok, err)
 	}
 }
 
@@ -569,19 +698,85 @@ func callbackSearchResult(shopID string) search.Result {
 }
 
 type callbackSessions struct {
-	mu                sync.Mutex
-	value             storage.Session
-	present           bool
-	initialLoads      int
-	initialLoadsReady chan struct{}
+	mu      sync.Mutex
+	value   storage.Session
+	present bool
+}
+
+type delayedLoadSessions struct {
+	mu          sync.Mutex
+	value       storage.Session
+	present     bool
+	firstLoad   bool
+	loadStarted chan struct{}
+	releaseLoad chan struct{}
+}
+
+func newDelayedLoadSessions(session storage.Session) *delayedLoadSessions {
+	return &delayedLoadSessions{
+		value:       session,
+		present:     true,
+		loadStarted: make(chan struct{}),
+		releaseLoad: make(chan struct{}),
+	}
+}
+
+func (sessions *delayedLoadSessions) Save(_ context.Context, session storage.Session) error {
+	sessions.mu.Lock()
+	defer sessions.mu.Unlock()
+	sessions.value = session
+	sessions.present = true
+	return nil
+}
+
+func (sessions *delayedLoadSessions) Load(_ context.Context, _ int64) (storage.Session, bool, error) {
+	sessions.mu.Lock()
+	value, present := sessions.value, sessions.present
+	if !sessions.firstLoad {
+		sessions.firstLoad = true
+		close(sessions.loadStarted)
+		release := sessions.releaseLoad
+		sessions.mu.Unlock()
+		<-release
+		return value, present, nil
+	}
+	sessions.mu.Unlock()
+	return value, present, nil
+}
+
+func (sessions *delayedLoadSessions) Delete(_ context.Context, _ int64) error {
+	sessions.mu.Lock()
+	defer sessions.mu.Unlock()
+	sessions.present = false
+	return nil
+}
+
+type callbackMessageOrderingSearcher struct {
+	messageStarted  chan struct{}
+	releaseMessage  chan struct{}
+	messageCanceled chan struct{}
+	callbackCalled  chan struct{}
+}
+
+func (searcher *callbackMessageOrderingSearcher) Search(ctx context.Context, query domain.SearchQuery) search.Result {
+	if query.Raw == "New Query" {
+		close(searcher.messageStarted)
+		select {
+		case <-searcher.releaseMessage:
+			return search.Result{Offers: []domain.Offer{{
+				Brand: "Brand", Name: "New", Concentration: domain.ConcentrationEDP,
+			}}}
+		case <-ctx.Done():
+			searcher.messageCanceled <- struct{}{}
+			return search.Result{}
+		}
+	}
+	searcher.callbackCalled <- struct{}{}
+	return callbackSearchResult("stale-shop")
 }
 
 func newCallbackSessions(session storage.Session) *callbackSessions {
-	return &callbackSessions{
-		value:             session,
-		present:           true,
-		initialLoadsReady: make(chan struct{}),
-	}
+	return &callbackSessions{value: session, present: true}
 }
 
 func (s *callbackSessions) Save(_ context.Context, session storage.Session) error {
@@ -592,23 +787,8 @@ func (s *callbackSessions) Save(_ context.Context, session storage.Session) erro
 	return nil
 }
 
-func (s *callbackSessions) Load(ctx context.Context, _ int64) (storage.Session, bool, error) {
+func (s *callbackSessions) Load(_ context.Context, _ int64) (storage.Session, bool, error) {
 	s.mu.Lock()
-	if s.initialLoads < 2 {
-		s.initialLoads++
-		value, present := s.value, s.present
-		if s.initialLoads == 2 {
-			close(s.initialLoadsReady)
-		}
-		ready := s.initialLoadsReady
-		s.mu.Unlock()
-		select {
-		case <-ready:
-			return value, present, nil
-		case <-ctx.Done():
-			return storage.Session{}, false, ctx.Err()
-		}
-	}
 	defer s.mu.Unlock()
 	return s.value, s.present, nil
 }

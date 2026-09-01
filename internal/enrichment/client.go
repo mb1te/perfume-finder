@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -182,8 +183,11 @@ func safeSourceURL(raw string) bool {
 		target.RawQuery != "" || target.ForceQuery || target.Fragment != "" || target.RawFragment != "" {
 		return false
 	}
-	host := strings.TrimSuffix(strings.ToLower(target.Hostname()), ".")
+	host := strings.ToLower(target.Hostname())
 	if host != "fragrantica.ru" && host != "www.fragrantica.ru" {
+		return false
+	}
+	if path.Clean(target.Path) != target.Path {
 		return false
 	}
 	return strings.HasPrefix(target.Path, "/perfume/") && strings.HasSuffix(target.Path, ".html")
