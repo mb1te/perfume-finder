@@ -44,7 +44,7 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: fragranticaenricher [healthcheck]")
 	}
 
-	allocatorOptions := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.NoSandbox)
+	allocatorOptions := chromeAllocatorOptions(os.Getenv("CHROME_NO_SANDBOX"))
 	allocatorCtx, allocatorCancel := chromedp.NewExecAllocator(ctx, allocatorOptions...)
 	defer allocatorCancel()
 	renderer, err := fragrantica.NewBrowserRenderer(allocatorCtx, nil)
@@ -84,6 +84,14 @@ func run(ctx context.Context, args []string) error {
 		}
 		return err
 	}
+}
+
+func chromeAllocatorOptions(noSandbox string) []chromedp.ExecAllocatorOption {
+	options := append([]chromedp.ExecAllocatorOption(nil), chromedp.DefaultExecAllocatorOptions[:]...)
+	if noSandbox == "1" {
+		options = append(options, chromedp.NoSandbox)
+	}
+	return options
 }
 
 func runHealthcheck(ctx context.Context, client httpDoer) error {

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/chromedp/chromedp"
 )
 
 type fakeHTTPClient struct {
@@ -51,5 +53,21 @@ func TestHealthcheckRejectsNonOKAndTransportFailure(t *testing.T) {
 				t.Fatal("healthcheck succeeded")
 			}
 		})
+	}
+}
+
+func TestChromeAllocatorOptionsKeepSandboxByDefault(t *testing.T) {
+	for _, value := range []string{"", "0", "true"} {
+		options := chromeAllocatorOptions(value)
+		if len(options) != len(chromedp.DefaultExecAllocatorOptions) {
+			t.Fatalf("CHROME_NO_SANDBOX=%q: allocator options = %d, want default %d", value, len(options), len(chromedp.DefaultExecAllocatorOptions))
+		}
+	}
+}
+
+func TestChromeAllocatorOptionsDisableSandboxOnlyOnExplicitOptIn(t *testing.T) {
+	options := chromeAllocatorOptions("1")
+	if len(options) != len(chromedp.DefaultExecAllocatorOptions)+1 {
+		t.Fatalf("allocator options = %d, want default + NoSandbox (%d)", len(options), len(chromedp.DefaultExecAllocatorOptions)+1)
 	}
 }
