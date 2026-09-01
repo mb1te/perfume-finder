@@ -36,6 +36,15 @@ type BrowserRenderer struct {
 	slot    chan struct{}
 	enrich  enrichFunc
 	ready   func(context.Context) error
+	close   func()
+	closeMu sync.Once
+}
+
+type browserRuntime struct {
+	startRoot func(context.Context) (context.Context, context.CancelFunc, error)
+	newTab    func(context.Context, context.Context) (context.Context, context.CancelFunc)
+	enrich    func(context.Context, context.Context, NetworkGuard, enrichment.Request) (enrichment.Card, bool, error)
+	ready     func(context.Context, context.Context) error
 }
 
 func newBrowserRenderer(timeout time.Duration, enrich enrichFunc) *BrowserRenderer {
@@ -44,18 +53,37 @@ func newBrowserRenderer(timeout time.Duration, enrich enrichFunc) *BrowserRender
 		slot:    make(chan struct{}, 1),
 		enrich:  enrich,
 		ready:   func(context.Context) error { return nil },
+		close:   func() {},
 	}
 }
 
-func NewBrowserRenderer(allocatorCtx context.Context, resolver Resolver) *BrowserRenderer {
+func NewBrowserRenderer(allocatorCtx context.Context, resolver Resolver) (*BrowserRenderer, error) {
+	return newBrowserRendererWithRuntime(allocatorCtx, resolver, browserRuntime{
+		startRoot: startBrowserRoot,
+		newTab:    browserTabContext,
+		enrich:    enrichWithBrowser,
+		ready:     browserReady,
+	})
+}
+
+func newBrowserRendererWithRuntime(allocatorCtx context.Context, resolver Resolver, runtime browserRuntime) (*BrowserRenderer, error) {
+	rootCtx, rootCancel, err := runtime.startRoot(allocatorCtx)
+	if err != nil {
+		return nil, err
+	}
 	guard := NewNetworkGuard(resolver)
 	renderer := newBrowserRenderer(15*time.Second, func(ctx context.Context, request enrichment.Request) (enrichment.Card, bool, error) {
-		return enrichWithBrowser(ctx, allocatorCtx, guard, request)
+		tabCtx, tabCancel := runtime.newTab(ctx, rootCtx)
+		defer tabCancel()
+		return runtime.enrich(ctx, tabCtx, guard, request)
 	})
 	renderer.ready = func(ctx context.Context) error {
-		return browserReady(ctx, allocatorCtx)
+		tabCtx, tabCancel := runtime.newTab(ctx, rootCtx)
+		defer tabCancel()
+		return runtime.ready(ctx, tabCtx)
 	}
-	return renderer
+	renderer.close = rootCancel
+	return renderer, nil
 }
 
 func (renderer *BrowserRenderer) Enrich(ctx context.Context, request enrichment.Request) (enrichment.Card, bool, error) {
@@ -87,9 +115,20 @@ func (renderer *BrowserRenderer) Ready(ctx context.Context) error {
 	return renderer.ready(readyCtx)
 }
 
-func browserReady(ctx, allocatorCtx context.Context) error {
-	tabCtx, cancel := browserTabContext(ctx, allocatorCtx)
-	defer cancel()
+func (renderer *BrowserRenderer) Close() {
+	renderer.closeMu.Do(renderer.close)
+}
+
+func startBrowserRoot(allocatorCtx context.Context) (context.Context, context.CancelFunc, error) {
+	rootCtx, rootCancel := chromedp.NewContext(allocatorCtx)
+	if err := chromedp.Run(rootCtx); err != nil {
+		rootCancel()
+		return nil, nil, err
+	}
+	return rootCtx, rootCancel, nil
+}
+
+func browserReady(ctx, tabCtx context.Context) error {
 	if err := chromedp.Run(tabCtx, chromedp.Navigate("about:blank")); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -99,15 +138,13 @@ func browserReady(ctx, allocatorCtx context.Context) error {
 	return nil
 }
 
-func enrichWithBrowser(ctx, allocatorCtx context.Context, baseGuard NetworkGuard, request enrichment.Request) (enrichment.Card, bool, error) {
+func enrichWithBrowser(ctx, tabCtx context.Context, baseGuard NetworkGuard, request enrichment.Request) (enrichment.Card, bool, error) {
 	guard := newLookupGuard(baseGuard)
 	searchURL := buildSearchURL(request)
 	if err := allowRawURL(ctx, guard, searchURL); err != nil {
 		return enrichment.Card{}, false, err
 	}
 
-	tabCtx, cancel := browserTabContext(ctx, allocatorCtx)
-	defer cancel()
 	interceptor := newRequestInterceptor(tabCtx, guard)
 	chromedp.ListenTarget(tabCtx, interceptor.handle)
 	if err := chromedp.Run(tabCtx, fetch.Enable()); err != nil {
@@ -183,8 +220,8 @@ func enrichWithBrowser(ctx, allocatorCtx context.Context, baseGuard NetworkGuard
 	}, true, nil
 }
 
-func browserTabContext(ctx, allocatorCtx context.Context) (context.Context, context.CancelFunc) {
-	tabCtx, tabCancel := chromedp.NewContext(allocatorCtx)
+func browserTabContext(ctx, rootCtx context.Context) (context.Context, context.CancelFunc) {
+	tabCtx, tabCancel := chromedp.NewContext(rootCtx)
 	stop := context.AfterFunc(ctx, tabCancel)
 	return tabCtx, func() {
 		stop()

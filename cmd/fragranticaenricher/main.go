@@ -46,7 +46,11 @@ func run(ctx context.Context, args []string) error {
 
 	allocatorCtx, allocatorCancel := chromedp.NewExecAllocator(ctx, chromedp.DefaultExecAllocatorOptions[:]...)
 	defer allocatorCancel()
-	renderer := fragrantica.NewBrowserRenderer(allocatorCtx, nil)
+	renderer, err := fragrantica.NewBrowserRenderer(allocatorCtx, nil)
+	if err != nil {
+		return fmt.Errorf("start Chromium: %w", err)
+	}
+	defer renderer.Close()
 	server := &http.Server{
 		Addr:              sidecarAddress,
 		Handler:           fragrantica.NewServer(renderer),

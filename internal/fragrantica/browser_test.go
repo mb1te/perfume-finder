@@ -75,6 +75,80 @@ func TestBrowserRendererEnforcesHardTimeoutAndKeepsSlotUntilCleanup(t *testing.T
 	t.Fatal("worker slot was not released after cleanup")
 }
 
+func TestBrowserRendererReusesOneRootBrowserAcrossChildTabs(t *testing.T) {
+	type contextKey string
+	const (
+		rootKey contextKey = "root"
+		tabKey  contextKey = "tab"
+	)
+	rootToken := &struct{}{}
+	rootStarts, rootStops, tabStarts, tabStops := 0, 0, 0, 0
+	badRootParent := false
+	runtime := browserRuntime{
+		startRoot: func(parent context.Context) (context.Context, context.CancelFunc, error) {
+			rootStarts++
+			rootCtx, cancel := context.WithCancel(context.WithValue(parent, rootKey, rootToken))
+			return rootCtx, func() {
+				rootStops++
+				cancel()
+			}, nil
+		},
+		newTab: func(_ context.Context, rootCtx context.Context) (context.Context, context.CancelFunc) {
+			if rootCtx.Value(rootKey) != rootToken {
+				badRootParent = true
+			}
+			tabStarts++
+			tabCtx, cancel := context.WithCancel(context.WithValue(rootCtx, tabKey, tabStarts))
+			var once sync.Once
+			return tabCtx, func() {
+				once.Do(func() {
+					tabStops++
+					cancel()
+				})
+			}
+		},
+		enrich: func(_ context.Context, tabCtx context.Context, _ NetworkGuard, _ enrichment.Request) (enrichment.Card, bool, error) {
+			if tabCtx.Value(tabKey) == nil {
+				return enrichment.Card{}, false, errors.New("enrichment did not receive a child tab")
+			}
+			return enrichment.Card{}, false, nil
+		},
+		ready: func(_ context.Context, tabCtx context.Context) error {
+			if tabCtx.Value(tabKey) == nil {
+				return errors.New("readiness did not receive a child tab")
+			}
+			return nil
+		},
+	}
+	renderer, err := newBrowserRendererWithRuntime(context.Background(), nil, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := renderer.Enrich(context.Background(), browserRequest); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Ready(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := renderer.Enrich(context.Background(), browserRequest); err != nil {
+		t.Fatal(err)
+	}
+	if rootStarts != 1 || rootStops != 0 {
+		t.Fatalf("root lifecycle before Close = starts:%d stops:%d, want 1:0", rootStarts, rootStops)
+	}
+	if badRootParent {
+		t.Fatal("a child tab was not created from the allocated root browser context")
+	}
+	if tabStarts != 3 || tabStops != 3 {
+		t.Fatalf("child tab lifecycle = starts:%d stops:%d, want 3:3", tabStarts, tabStops)
+	}
+	renderer.Close()
+	renderer.Close()
+	if rootStops != 1 {
+		t.Fatalf("root stops after idempotent Close = %d, want 1", rootStops)
+	}
+}
+
 func TestBuildSearchURLIncludesExactRequestFields(t *testing.T) {
 	got := buildSearchURL(enrichment.Request{
 		Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT,
@@ -129,7 +203,11 @@ func TestBrowserRendererLive(t *testing.T) {
 	}
 	allocatorCtx, allocatorCancel := chromedp.NewExecAllocator(context.Background(), chromedp.DefaultExecAllocatorOptions[:]...)
 	defer allocatorCancel()
-	renderer := NewBrowserRenderer(allocatorCtx, nil)
+	renderer, err := NewBrowserRenderer(allocatorCtx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer renderer.Close()
 	card, ok, err := renderer.Enrich(context.Background(), browserRequest)
 	if errors.Is(err, ErrAccessChallenge) {
 		t.Skipf("Fragrantica access challenge detected: %v", err)
