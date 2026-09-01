@@ -64,9 +64,13 @@ func NewHTTPClient(baseURL string, client *http.Client) (*HTTPClient, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	httpClient := *client
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &HTTPClient{
 		endpoint: strings.TrimRight(base.String(), "/") + "/v1/enrich",
-		http:     client,
+		http:     &httpClient,
 	}, nil
 }
 

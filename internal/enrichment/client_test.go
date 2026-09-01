@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"parfumes_finder/internal/domain"
@@ -86,6 +87,36 @@ func TestHTTPClientMapsNotFoundAndOtherStatuses(t *testing.T) {
 				t.Fatalf("ok=%v, err=%v", ok, err)
 			}
 		})
+	}
+}
+
+func TestHTTPClientReturnsRedirectStatusWithoutFollowingIt(t *testing.T) {
+	var redirectCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, got *http.Request) {
+		switch got.URL.Path {
+		case "/v1/enrich":
+			writer.Header().Set("Location", "/redirect-target")
+			writer.WriteHeader(http.StatusFound)
+		case "/redirect-target":
+			redirectCalled.Store(true)
+			writeJSONCard(t, writer, wantedCard)
+		default:
+			http.NotFound(writer, got)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := client.Enrich(context.Background(), request)
+	var statusErr *HTTPStatusError
+	if ok || !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusFound {
+		t.Fatalf("ok=%v, err=%v", ok, err)
+	}
+	if redirectCalled.Load() {
+		t.Fatal("redirect target was called")
 	}
 }
 
