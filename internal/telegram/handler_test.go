@@ -406,6 +406,82 @@ func TestTelegramUpdateIDResetAfterWeek_LowerIDAtSevenDaysMinusNanosecondIsRejec
 	}
 }
 
+func TestTelegramUpdateIDResetAfterWeek_EqualIDAtSevenDaysMinusNanosecondIsRejectedWithoutCancel(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC))
+	searcher := newUpdateEpochProbeSearcher()
+	t.Cleanup(searcher.release)
+	h := NewHandler(&fakeMessenger{}, newMemorySessions(), searcher, nil)
+	h.now = clock.Now
+
+	currentDone := make(chan error, 1)
+	go func() {
+		currentDone <- h.HandleMessageUpdate(context.Background(), 100, 42, "current epoch")
+	}()
+	current := searcher.nextCall(t)
+
+	clock.Advance(7*24*time.Hour - time.Nanosecond)
+	staleDone := make(chan error, 1)
+	go func() {
+		staleDone <- h.HandleMessageUpdate(context.Background(), 100, 42, "duplicate before reset boundary")
+	}()
+
+	searcher.assertRejected(t, staleDone)
+	if err := current.ctx.Err(); err != nil {
+		t.Fatalf("equal update before reset boundary canceled the current operation: %v", err)
+	}
+	searcher.release()
+	if err := <-currentDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTelegramUpdateIDResetAfterWeek_StaleRejectDoesNotRefreshIdleWindow(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC))
+	searcher := newUpdateEpochProbeSearcher()
+	t.Cleanup(searcher.release)
+	h := NewHandler(&fakeMessenger{}, newMemorySessions(), searcher, nil)
+	h.now = clock.Now
+
+	previousDone := make(chan error, 1)
+	go func() {
+		previousDone <- h.HandleMessageUpdate(context.Background(), 100, 42, "previous epoch")
+	}()
+	previous := searcher.nextCall(t)
+
+	clock.Advance(7*24*time.Hour - time.Nanosecond)
+	staleDone := make(chan error, 1)
+	go func() {
+		staleDone <- h.HandleMessageUpdate(context.Background(), 50, 42, "stale before reset boundary")
+	}()
+	searcher.assertRejected(t, staleDone)
+	if err := previous.ctx.Err(); err != nil {
+		t.Fatalf("stale update canceled the previous epoch operation: %v", err)
+	}
+
+	clock.Advance(time.Nanosecond)
+	currentDone := make(chan error, 1)
+	go func() {
+		currentDone <- h.HandleMessageUpdate(context.Background(), 50, 42, "new epoch at original boundary")
+	}()
+	current := searcher.nextCall(t)
+	if current.raw != "new epoch at original boundary" {
+		t.Fatalf("admitted search = %q, want new epoch at original boundary", current.raw)
+	}
+	select {
+	case <-previous.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("new epoch at the original boundary did not cancel the previous operation")
+	}
+
+	searcher.release()
+	if err := <-previousDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-currentDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTelegramUpdateIDResetAfterWeek_LowerIDAtExactSevenDaysIsAdmittedAndCancelsPrevious(t *testing.T) {
 	clock := newFakeClock(time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC))
 	searcher := newUpdateEpochProbeSearcher()
