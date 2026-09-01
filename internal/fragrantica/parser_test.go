@@ -44,6 +44,26 @@ func TestSelectExactRejectsFlankersAndConcentrationMismatch(t *testing.T) {
 	}
 }
 
+func TestSelectExactMatchesEditionExplicitInCardSlug(t *testing.T) {
+	candidates := parseSearchFixture(t, "search-sauvage.html")
+	got, ok := SelectExact(enrichment.Request{
+		Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT,
+	}, candidates)
+	if !ok || !strings.Contains(got.URL, "31861") || got.Edition != "2015" {
+		t.Fatalf("got %+v %v", got, ok)
+	}
+}
+
+func TestSelectExactRemovesRussianConcentrationAliasFromBaseName(t *testing.T) {
+	candidates := parseSearchFixture(t, "search-sauvage-ru.html")
+	got, ok := SelectExact(enrichment.Request{
+		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP,
+	}, candidates)
+	if !ok || got.Name != "sauvage" || got.Concentration != domain.ConcentrationEDP {
+		t.Fatalf("got %+v %v", got, ok)
+	}
+}
+
 func TestSelectExactRequiresExactNormalizedBrandNameEditionAndConcentration(t *testing.T) {
 	request := enrichment.Request{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDP}
 	matching := Candidate{URL: "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html", Brand: "DIOR", Name: " SAUVAGE ", Edition: "2015", Concentration: domain.ConcentrationEDP}

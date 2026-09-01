@@ -19,9 +19,11 @@ import (
 var ErrAccessChallenge = errors.New("fragrantica access challenge")
 
 var (
-	concentrationAlias = regexp.MustCompile(`(?i)\b(?:eau de parfum|eau de toilette|extrait de parfum|eau de cologne|edp|edt|extrait|cologne|parfum|elixir)\b`)
+	concentrationAlias = regexp.MustCompile(`(?i)(^|[\s,;:()\[\]])(?:elixir|эликсир|extrait de parfum|extrait|экстракт духов|eau de toilette|туалетная вода|edt|eau de parfum|парфюмерная вода|edp|eau de cologne|cologne|одеколон|parfum|духи)($|[\s,;:()\[\]])`)
 	backgroundColor    = regexp.MustCompile(`(?i)(?:background(?:-color)?\s*:\s*)(#[0-9a-f]{3,8})`)
 	accordWidth        = regexp.MustCompile(`(?i)\bwidth\s*:\s*(\d+(?:\.\d+)?)%`)
+	editionYear        = regexp.MustCompile(`\b(?:18|19|20)\d{2}\b`)
+	digitsOnly         = regexp.MustCompile(`^\d+$`)
 )
 
 type Candidate struct {
@@ -57,7 +59,8 @@ func ParseSearch(reader io.Reader, _ *url.URL) ([]Candidate, error) {
 		}
 		title := strings.TrimSpace(link.Text())
 		concentration := domain.ParseConcentration(title)
-		name := normalizedBaseName(title, brand)
+		edition := editionFromCard(title, productURL)
+		name := normalizedBaseName(title, brand, edition)
 		if name == "" {
 			return
 		}
@@ -65,6 +68,7 @@ func ParseSearch(reader io.Reader, _ *url.URL) ([]Candidate, error) {
 			URL:           productURL,
 			Brand:         brand,
 			Name:          name,
+			Edition:       edition,
 			Concentration: concentration,
 		})
 	})
@@ -145,14 +149,50 @@ func hasAccessChallenge(payload []byte) bool {
 		strings.Contains(content, "cf-chl-")
 }
 
-func normalizedBaseName(title, brand string) string {
+func normalizedBaseName(title, brand, edition string) string {
 	normalized := domain.NormalizeText(title)
 	normalizedBrand := domain.NormalizeText(brand)
 	if strings.HasSuffix(normalized, " "+normalizedBrand) {
 		normalized = strings.TrimSpace(strings.TrimSuffix(normalized, " "+normalizedBrand))
 	}
 	normalized = concentrationAlias.ReplaceAllString(normalized, " ")
+	if edition != "" {
+		normalized = strings.ReplaceAll(normalized, edition, " ")
+	}
 	return domain.NormalizeText(normalized)
+}
+
+func editionFromCard(title, productURL string) string {
+	if edition := unambiguousEdition(editionYear.FindAllString(title, -1)); edition != "" {
+		return edition
+	}
+	u, err := url.Parse(productURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.TrimSuffix(u.Path, ".html"), "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	slug := strings.Split(parts[len(parts)-1], "-")
+	if len(slug) < 2 || !digitsOnly.MatchString(slug[len(slug)-1]) {
+		return ""
+	}
+	return unambiguousEdition(slug[:len(slug)-1])
+}
+
+func unambiguousEdition(values []string) string {
+	var edition string
+	for _, value := range values {
+		if !editionYear.MatchString(value) {
+			continue
+		}
+		if edition != "" && edition != value {
+			return ""
+		}
+		edition = value
+	}
+	return edition
 }
 
 func brandFromProductURL(raw string) string {
