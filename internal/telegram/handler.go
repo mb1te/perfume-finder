@@ -5,20 +5,25 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"parfumes_finder/internal/domain"
+	"parfumes_finder/internal/enrichment"
 	"parfumes_finder/internal/search"
 	"parfumes_finder/internal/storage"
 )
 
 type Button struct{ Text, Data string }
 type Message struct {
-	Text    string
-	Buttons []Button
+	Text     string
+	Buttons  []Button
+	PhotoPNG []byte
+	Caption  string
 }
 type Messenger interface {
 	Send(context.Context, int64, Message) error
@@ -39,13 +44,14 @@ type Handler struct {
 	messenger Messenger
 	sessions  Sessions
 	searcher  Searcher
+	enricher  enrichment.Service
 	limiters  *userLimiters
 	activeMu  sync.Mutex
 	active    map[int64]activeSearch
 }
 
-func NewHandler(m Messenger, sessions Sessions, searcher Searcher) *Handler {
-	return &Handler{messenger: m, sessions: sessions, searcher: searcher, limiters: newUserLimiters(), active: map[int64]activeSearch{}}
+func NewHandler(m Messenger, sessions Sessions, searcher Searcher, enricher enrichment.Service) *Handler {
+	return &Handler{messenger: m, sessions: sessions, searcher: searcher, enricher: enricher, limiters: newUserLimiters(), active: map[int64]activeSearch{}}
 }
 
 func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) error {
@@ -168,10 +174,54 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
-		return h.messenger.Send(searchCtx, chatID, Message{Text: RenderResult(session.Query, result)})
+		if err := h.messenger.Send(searchCtx, chatID, Message{Text: RenderResult(session.Query, result)}); err != nil {
+			return err
+		}
+		if h.enricher == nil || searchCtx.Err() != nil || !h.isOwned(chatID, operationToken) {
+			return nil
+		}
+		return h.sendEnrichment(searchCtx, chatID, session.Query, operationToken)
 	default:
 		return fmt.Errorf("unknown callback")
 	}
+}
+
+func (h *Handler) sendEnrichment(ctx context.Context, chatID int64, query domain.SearchQuery, operationToken string) error {
+	started := time.Now()
+	card, ok, err := h.enricher.Enrich(ctx, enrichment.Request{
+		Brand: query.Brand, Name: query.Name, Edition: query.Edition, Concentration: query.Concentration,
+	})
+	if err != nil {
+		logEnrichment(chatID, "error", started)
+		return nil
+	}
+	if !ok {
+		logEnrichment(chatID, "not_found", started)
+		return nil
+	}
+	if ctx.Err() != nil || !h.isOwned(chatID, operationToken) {
+		logEnrichment(chatID, "superseded", started)
+		return nil
+	}
+	if len(card.PNG) == 0 || strings.TrimSpace(card.SourceURL) == "" {
+		logEnrichment(chatID, "invalid_card", started)
+		return nil
+	}
+	caption := strings.TrimSpace(card.Title)
+	if caption != "" {
+		caption += "\n"
+	}
+	caption += card.SourceURL
+	if err := h.messenger.Send(ctx, chatID, Message{PhotoPNG: card.PNG, Caption: caption}); err != nil {
+		logEnrichment(chatID, "photo_error", started)
+		return nil
+	}
+	logEnrichment(chatID, "sent", started)
+	return nil
+}
+
+func logEnrichment(chatID int64, outcome string, started time.Time) {
+	log.Printf("fragrantica enrichment chat_id=%d outcome=%s duration=%s", chatID, outcome, time.Since(started).Round(time.Millisecond))
 }
 
 func (h *Handler) advance(ctx context.Context, session storage.Session) error {

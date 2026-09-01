@@ -8,7 +8,7 @@ import (
 
 func TestHandlerLimitsImmediateSearchBursts(t *testing.T) {
 	m := &fakeMessenger{}
-	h := NewHandler(m, newMemorySessions(), fakeSearcher{})
+	h := NewHandler(m, newMemorySessions(), fakeSearcher{}, nil)
 	for range 4 {
 		if err := h.HandleMessage(context.Background(), 7, "Dior Sauvage"); err != nil {
 			t.Fatal(err)

@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"parfumes_finder/internal/domain"
+	"parfumes_finder/internal/enrichment"
 	"parfumes_finder/internal/search"
 	"parfumes_finder/internal/storage"
 	"reflect"
@@ -16,7 +18,7 @@ func TestHandlerGuidesQueryAndRendersGroupedResults(t *testing.T) {
 	messenger := &fakeMessenger{}
 	sessions := newMemorySessions()
 	searcher := fakeSearcher{result: search.Result{Offers: []domain.Offer{{ShopID: "orental", Brand: "Christian Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail, PriceKopecks: 1402800, InStock: true, URL: "https://orental.ru/sauvage"}, {ShopID: "allure", Brand: "Christian Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDT, VolumeMicroliters: 100000, Kind: domain.ProductKindTester, PriceKopecks: 1200000, InStock: true, URL: "https://allureparfum.ru/sauvage"}}, Failures: []search.Failure{{ShopID: "duhirf"}}}}
-	h := NewHandler(messenger, sessions, searcher)
+	h := NewHandler(messenger, sessions, searcher, nil)
 	ctx := context.Background()
 	if err := h.HandleMessage(ctx, 42, "Dior Sauvage"); err != nil {
 		t.Fatal(err)
@@ -49,7 +51,7 @@ func TestHandlerDiscoversAmbiguousFragrancesBeforeConcentration(t *testing.T) {
 	m := &fakeMessenger{}
 	sessions := newMemorySessions()
 	searcher := fakeSearcher{result: search.Result{Offers: []domain.Offer{{Brand: "Christian Dior", Name: "Sauvage", Edition: "2015"}, {Brand: "Christian Dior", Name: "Eau Sauvage"}}}}
-	h := NewHandler(m, sessions, searcher)
+	h := NewHandler(m, sessions, searcher, nil)
 	if err := h.HandleMessage(context.Background(), 9, "Dior Sauvage"); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +83,7 @@ func TestSingleObservedConcentrationIsSelectedAutomatically(t *testing.T) {
 	sessions := newMemorySessions()
 	h := NewHandler(messenger, sessions, fakeSearcher{result: search.Result{Offers: []domain.Offer{{
 		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP,
-	}}}})
+	}}}}, nil)
 	if err := h.HandleMessage(context.Background(), 42, "Dior Sauvage"); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +111,7 @@ func TestMultipleObservedConcentrationsAreTheOnlyButtons(t *testing.T) {
 func TestNoObservedConcentrationRequestsExplicitRetry(t *testing.T) {
 	messenger := &fakeMessenger{}
 	sessions := newMemorySessions()
-	h := NewHandler(messenger, sessions, fakeSearcher{})
+	h := NewHandler(messenger, sessions, fakeSearcher{}, nil)
 	session := storage.Session{ChatID: 42, ID: "session-1", Query: domain.SearchQuery{
 		Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationUnknown,
 	}}
@@ -140,7 +142,7 @@ func TestHandlerParsesCompleteMultiwordBrandQuery(t *testing.T) {
 	m := &fakeMessenger{}
 	sessions := newMemorySessions()
 	searcher := fakeSearcher{result: search.Result{Offers: []domain.Offer{{Brand: "Tom Ford", Name: "Ombre Leather", Concentration: domain.ConcentrationEDP, VolumeMicroliters: 100000, Kind: domain.ProductKindRetail}}}}
-	h := NewHandler(m, sessions, searcher)
+	h := NewHandler(m, sessions, searcher, nil)
 	if err := h.HandleMessage(context.Background(), 10, "Tom Ford Ombre Leather EDP 100 ml"); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +156,7 @@ func TestHandlerRejectsCallbackFromSupersededSession(t *testing.T) {
 	m := &fakeMessenger{}
 	sessions := newMemorySessions()
 	searcher := fakeSearcher{result: search.Result{Offers: []domain.Offer{{Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP}}}}
-	h := NewHandler(m, sessions, searcher)
+	h := NewHandler(m, sessions, searcher, nil)
 	ctx := context.Background()
 	_ = h.HandleMessage(ctx, 11, "Dior Sauvage")
 	old := m.messages[len(m.messages)-1].Buttons[0].Data
@@ -173,7 +175,7 @@ func TestConcurrentNewSearchCannotBeOverwrittenByCanceledDiscovery(t *testing.T)
 	searcher := &supersedingSearcher{started: started}
 	sessions := newMemorySessions()
 	messenger := &fakeMessenger{}
-	handler := NewHandler(messenger, sessions, searcher)
+	handler := NewHandler(messenger, sessions, searcher, nil)
 	var wait sync.WaitGroup
 	wait.Add(1)
 	go func() { defer wait.Done(); _ = handler.HandleMessage(context.Background(), 12, "Old Query") }()
@@ -206,7 +208,7 @@ func TestRepeatedKindCallbackSupersedesPriorSearchOperation(t *testing.T) {
 		},
 	})
 	messenger := &fakeMessenger{}
-	handler := NewHandler(messenger, sessions, searcher)
+	handler := NewHandler(messenger, sessions, searcher, nil)
 	callback := "session-1|kind|retail"
 
 	done := make(chan error, 2)
@@ -248,7 +250,7 @@ func TestRepeatedKindCallbackSupersedesPriorSearchOperation(t *testing.T) {
 
 func TestSlowSendDoesNotBlockAnotherChat(t *testing.T) {
 	blocking := newBlockingMessenger(42)
-	h := NewHandler(blocking, newMemorySessions(), fixedSearcher())
+	h := NewHandler(blocking, newMemorySessions(), fixedSearcher(), nil)
 	firstDone := make(chan error, 1)
 	go func() {
 		firstDone <- h.HandleMessage(context.Background(), 42, "Dior Sauvage EDP 100 мл")
@@ -287,11 +289,168 @@ func buttonData(t *testing.T, messenger *fakeMessenger, suffix string) string {
 	return ""
 }
 
-type fakeMessenger struct{ messages []Message }
+func TestPriceResultIsSentBeforeFragranticaCard(t *testing.T) {
+	messenger := &fakeMessenger{}
+	enricher := &fakeEnricher{before: func() {
+		messages := messenger.snapshot()
+		if len(messages) == 0 || !strings.Contains(messages[len(messages)-1].Text, "Без доставки") {
+			t.Fatalf("price was not sent before enrichment: %+v", messages)
+		}
+	}, card: enrichment.Card{
+		SourceURL: "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html",
+		Title:     "Sauvage Eau de Parfum Dior",
+		PNG:       []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a},
+	}, ok: true}
+	h := NewHandler(messenger, newMemorySessions(), completeVariantSearcher(), enricher)
+	if err := runCompleteQuery(h, 42, "Dior Sauvage EDP 100 мл"); err != nil {
+		t.Fatal(err)
+	}
+
+	messages := messenger.snapshot()
+	if len(messages) < 2 {
+		t.Fatalf("messages = %+v", messages)
+	}
+	price, photo := messages[len(messages)-2], messages[len(messages)-1]
+	if !strings.Contains(price.Text, "Без доставки") || len(price.PhotoPNG) != 0 {
+		t.Fatalf("first final message = %+v", price)
+	}
+	if !reflect.DeepEqual(photo.PhotoPNG, enricher.card.PNG) {
+		t.Fatalf("photo PNG = %x, want %x", photo.PhotoPNG, enricher.card.PNG)
+	}
+	if want := enricher.card.Title + "\n" + enricher.card.SourceURL; photo.Caption != want {
+		t.Fatalf("caption = %q, want %q", photo.Caption, want)
+	}
+	if want := (enrichment.Request{Brand: "Dior", Name: "Sauvage", Edition: "2015", Concentration: domain.ConcentrationEDP}); enricher.request != want {
+		t.Fatalf("enrichment request = %+v, want %+v", enricher.request, want)
+	}
+}
+
+func TestEnrichmentFailureDoesNotReplacePriceResult(t *testing.T) {
+	messenger := &fakeMessenger{}
+	h := NewHandler(messenger, newMemorySessions(), completeVariantSearcher(), &fakeEnricher{err: errors.New("challenge")})
+	if err := runCompleteQuery(h, 42, "Dior Sauvage EDP 100 мл"); err != nil {
+		t.Fatal(err)
+	}
+	messages := messenger.snapshot()
+	if last := messages[len(messages)-1]; !strings.Contains(last.Text, "Без доставки") || len(last.PhotoPNG) != 0 {
+		t.Fatalf("last message = %+v", last)
+	}
+}
+
+func TestPhotoFailureDoesNotReplacePriceResult(t *testing.T) {
+	messenger := &fakeMessenger{photoErr: errors.New("telegram unavailable")}
+	h := NewHandler(messenger, newMemorySessions(), completeVariantSearcher(), &fakeEnricher{card: enrichment.Card{
+		SourceURL: "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html",
+		Title:     "Sauvage Eau de Parfum Dior",
+		PNG:       []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a},
+	}, ok: true})
+	if err := runCompleteQuery(h, 42, "Dior Sauvage EDP 100 мл"); err != nil {
+		t.Fatal(err)
+	}
+	messages := messenger.snapshot()
+	if last := messages[len(messages)-1]; !strings.Contains(last.Text, "Без доставки") || len(last.PhotoPNG) != 0 {
+		t.Fatalf("last message = %+v", last)
+	}
+}
+
+func TestSupersededEnrichmentCannotSendPhoto(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	enricher := &blockingEnricher{started: started, release: release, card: enrichment.Card{
+		Title:     "Sauvage Eau de Parfum Dior",
+		SourceURL: "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html",
+		PNG:       []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a},
+	}}
+	messenger := &fakeMessenger{}
+	h := NewHandler(messenger, newMemorySessions(), completeVariantSearcher(), enricher)
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- runCompleteQuery(h, 42, "Dior Sauvage EDP 100 мл") }()
+	<-started
+	if err := h.HandleMessage(context.Background(), 42, "Tom Ford Ombre Leather EDP 100 мл"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range messenger.snapshot() {
+		if len(message.PhotoPNG) > 0 && strings.Contains(message.Caption, "Sauvage") {
+			t.Fatalf("stale photo sent: %+v", message)
+		}
+	}
+}
+
+type fakeEnricher struct {
+	before  func()
+	card    enrichment.Card
+	ok      bool
+	err     error
+	request enrichment.Request
+}
+
+func (service *fakeEnricher) Enrich(_ context.Context, request enrichment.Request) (enrichment.Card, bool, error) {
+	if service.before != nil {
+		service.before()
+	}
+	service.request = request
+	return service.card, service.ok, service.err
+}
+
+type blockingEnricher struct {
+	started chan struct{}
+	release chan struct{}
+	card    enrichment.Card
+	once    sync.Once
+}
+
+func (service *blockingEnricher) Enrich(context.Context, enrichment.Request) (enrichment.Card, bool, error) {
+	service.once.Do(func() { close(service.started) })
+	<-service.release
+	return service.card, true, nil
+}
+
+func completeVariantSearcher() Searcher {
+	return fakeSearcher{result: search.Result{Offers: []domain.Offer{{
+		ShopID: "orental", Brand: "Dior", Name: "Sauvage", Edition: "2015",
+		Concentration: domain.ConcentrationEDP, VolumeMicroliters: 100000,
+		Kind: domain.ProductKindRetail, InStock: true, PriceKopecks: 1000000,
+	}}}}
+}
+
+func runCompleteQuery(h *Handler, chatID int64, query string) error {
+	if err := h.HandleMessage(context.Background(), chatID, query); err != nil {
+		return err
+	}
+	session, ok, err := h.sessions.Load(context.Background(), chatID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("session not found")
+	}
+	return h.HandleCallback(context.Background(), chatID, callbackData(session.ID, "kind", "retail"))
+}
+
+type fakeMessenger struct {
+	mu       sync.Mutex
+	messages []Message
+	photoErr error
+}
 
 func (m *fakeMessenger) Send(_ context.Context, _ int64, msg Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(msg.PhotoPNG) > 0 && m.photoErr != nil {
+		return m.photoErr
+	}
 	m.messages = append(m.messages, msg)
 	return nil
+}
+
+func (m *fakeMessenger) snapshot() []Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]Message(nil), m.messages...)
 }
 
 type fakeSearcher struct{ result search.Result }
