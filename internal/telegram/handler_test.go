@@ -377,6 +377,116 @@ func TestOlderCallbackCannotCancelNewerMessageAfterDelayedSessionLoad(t *testing
 	}
 }
 
+func TestTelegramUpdateIDResetAfterWeek_LowerIDAtSevenDaysMinusNanosecondIsRejectedWithoutCancel(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC))
+	searcher := newUpdateEpochProbeSearcher()
+	t.Cleanup(searcher.release)
+	h := NewHandler(&fakeMessenger{}, newMemorySessions(), searcher, nil)
+	h.now = clock.Now
+
+	currentDone := make(chan error, 1)
+	go func() {
+		currentDone <- h.HandleMessageUpdate(context.Background(), 100, 42, "current epoch")
+	}()
+	current := searcher.nextCall(t)
+
+	clock.Advance(7*24*time.Hour - time.Nanosecond)
+	staleDone := make(chan error, 1)
+	go func() {
+		staleDone <- h.HandleMessageUpdate(context.Background(), 50, 42, "lower before reset boundary")
+	}()
+
+	searcher.assertRejected(t, staleDone)
+	if err := current.ctx.Err(); err != nil {
+		t.Fatalf("stale lower update canceled the current operation: %v", err)
+	}
+	searcher.release()
+	if err := <-currentDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTelegramUpdateIDResetAfterWeek_LowerIDAtExactSevenDaysIsAdmittedAndCancelsPrevious(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC))
+	searcher := newUpdateEpochProbeSearcher()
+	t.Cleanup(searcher.release)
+	h := NewHandler(&fakeMessenger{}, newMemorySessions(), searcher, nil)
+	h.now = clock.Now
+
+	previousDone := make(chan error, 1)
+	go func() {
+		previousDone <- h.HandleMessageUpdate(context.Background(), 100, 42, "previous epoch")
+	}()
+	previous := searcher.nextCall(t)
+
+	clock.Advance(7 * 24 * time.Hour)
+	currentDone := make(chan error, 1)
+	go func() {
+		currentDone <- h.HandleMessageUpdate(context.Background(), 50, 42, "new epoch")
+	}()
+	current := searcher.nextCall(t)
+	if current.raw != "new epoch" {
+		t.Fatalf("admitted search = %q, want new epoch", current.raw)
+	}
+	select {
+	case <-previous.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("lower update at the reset boundary did not cancel the previous epoch operation")
+	}
+
+	searcher.release()
+	if err := <-previousDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-currentDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTelegramUpdateIDResetAfterWeek_HigherIDRefreshesIdleWindow(t *testing.T) {
+	clock := newFakeClock(time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC))
+	searcher := newUpdateEpochProbeSearcher()
+	t.Cleanup(searcher.release)
+	h := NewHandler(&fakeMessenger{}, newMemorySessions(), searcher, nil)
+	h.now = clock.Now
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- h.HandleMessageUpdate(context.Background(), 100, 42, "first high-water mark")
+	}()
+	first := searcher.nextCall(t)
+
+	clock.Advance(6 * 24 * time.Hour)
+	currentDone := make(chan error, 1)
+	go func() {
+		currentDone <- h.HandleMessageUpdate(context.Background(), 101, 42, "refreshed high-water mark")
+	}()
+	current := searcher.nextCall(t)
+	select {
+	case <-first.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("higher update did not supersede the previous operation")
+	}
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Advance(24 * time.Hour)
+	staleDone := make(chan error, 1)
+	go func() {
+		staleDone <- h.HandleMessageUpdate(context.Background(), 50, 42, "lower one day after refresh")
+	}()
+	searcher.assertRejected(t, staleDone)
+	if err := current.ctx.Err(); err != nil {
+		t.Fatalf("higher update did not refresh the idle window; current operation canceled: %v", err)
+	}
+
+	searcher.release()
+	if err := <-currentDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSlowSendDoesNotBlockAnotherChat(t *testing.T) {
 	blocking := newBlockingMessenger(42)
 	h := NewHandler(blocking, newMemorySessions(), fixedSearcher(), nil)
@@ -627,6 +737,83 @@ func runCompleteQuery(h *Handler, chatID int64, query string) error {
 		return errors.New("session not found")
 	}
 	return h.HandleCallback(context.Background(), chatID, callbackData(session.ID, "kind", "retail"))
+}
+
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock(now time.Time) *fakeClock {
+	return &fakeClock{now: now}
+}
+
+func (clock *fakeClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.now
+}
+
+func (clock *fakeClock) Advance(elapsed time.Duration) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.now = clock.now.Add(elapsed)
+}
+
+type updateEpochSearchCall struct {
+	raw string
+	ctx context.Context
+}
+
+type updateEpochProbeSearcher struct {
+	calls       chan updateEpochSearchCall
+	releaseCh   chan struct{}
+	releaseOnce sync.Once
+}
+
+func newUpdateEpochProbeSearcher() *updateEpochProbeSearcher {
+	return &updateEpochProbeSearcher{
+		calls:     make(chan updateEpochSearchCall, 3),
+		releaseCh: make(chan struct{}),
+	}
+}
+
+func (searcher *updateEpochProbeSearcher) Search(ctx context.Context, query domain.SearchQuery) search.Result {
+	searcher.calls <- updateEpochSearchCall{raw: query.Raw, ctx: ctx}
+	select {
+	case <-ctx.Done():
+	case <-searcher.releaseCh:
+	}
+	return search.Result{}
+}
+
+func (searcher *updateEpochProbeSearcher) nextCall(t *testing.T) updateEpochSearchCall {
+	t.Helper()
+	select {
+	case call := <-searcher.calls:
+		return call
+	case <-time.After(time.Second):
+		t.Fatal("admitted update did not start a search")
+		return updateEpochSearchCall{}
+	}
+}
+
+func (searcher *updateEpochProbeSearcher) assertRejected(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case call := <-searcher.calls:
+		t.Fatalf("stale update unexpectedly started search %q", call.raw)
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale update did not return")
+	}
+}
+
+func (searcher *updateEpochProbeSearcher) release() {
+	searcher.releaseOnce.Do(func() { close(searcher.releaseCh) })
 }
 
 type fakeMessenger struct {

@@ -41,10 +41,14 @@ type activeSearch struct {
 	token  string
 	cancel context.CancelFunc
 }
+
+const updateIDEpochResetIdle = 7 * 24 * time.Hour
+
 type chatOperations struct {
 	mu             sync.Mutex
 	admitted       bool
 	latestUpdateID int64
+	lastAcceptedAt time.Time
 	active         activeSearch
 }
 type Handler struct {
@@ -55,10 +59,11 @@ type Handler struct {
 	limiters          *userLimiters
 	operations        sync.Map
 	syntheticUpdateID atomic.Int64
+	now               func() time.Time
 }
 
 func NewHandler(m Messenger, sessions Sessions, searcher Searcher, enricher enrichment.Service) *Handler {
-	return &Handler{messenger: m, sessions: sessions, searcher: searcher, enricher: enricher, limiters: newUserLimiters()}
+	return &Handler{messenger: m, sessions: sessions, searcher: searcher, enricher: enricher, limiters: newUserLimiters(), now: time.Now}
 }
 
 func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) error {
@@ -430,11 +435,13 @@ func (h *Handler) beginUpdate(parent context.Context, chatID, updateID int64) (c
 
 	operations.mu.Lock()
 	defer operations.mu.Unlock()
-	if operations.admitted && updateID <= operations.latestUpdateID {
+	now := h.now()
+	if operations.admitted && updateID <= operations.latestUpdateID && now.Sub(operations.lastAcceptedAt) < updateIDEpochResetIdle {
 		return nil, "", false
 	}
 	operations.admitted = true
 	operations.latestUpdateID = updateID
+	operations.lastAcceptedAt = now
 	if operations.active.cancel != nil {
 		operations.active.cancel()
 	}
