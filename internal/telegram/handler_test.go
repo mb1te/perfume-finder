@@ -190,6 +190,62 @@ func TestConcurrentNewSearchCannotBeOverwrittenByCanceledDiscovery(t *testing.T)
 	}
 }
 
+func TestRepeatedKindCallbackSupersedesPriorSearchOperation(t *testing.T) {
+	searcher := &callbackSupersedingSearcher{
+		firstStarted:  make(chan struct{}),
+		secondStarted: make(chan context.Context, 1),
+		releaseSecond: make(chan struct{}),
+	}
+	sessions := newCallbackSessions(storage.Session{
+		ChatID: 77,
+		ID:     "session-1",
+		Stage:  "choose_kind",
+		Query: domain.SearchQuery{
+			Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP,
+			VolumeMicroliters: 100000,
+		},
+	})
+	messenger := &fakeMessenger{}
+	handler := NewHandler(messenger, sessions, searcher)
+	callback := "session-1|kind|retail"
+
+	done := make(chan error, 2)
+	go func() {
+		done <- handler.HandleCallback(context.Background(), 77, callback)
+	}()
+	go func() {
+		done <- handler.HandleCallback(context.Background(), 77, callback)
+	}()
+	<-searcher.firstStarted
+	secondCtx := <-searcher.secondStarted
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(searcher.releaseSecond)
+		<-done
+		t.Fatal("superseded first callback did not return")
+	}
+	secondCanceledByFirst := secondCtx.Err() != nil
+	close(searcher.releaseSecond)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	if secondCanceledByFirst {
+		t.Fatal("first callback canceled the current callback operation")
+	}
+	if got := len(messenger.messages); got != 1 {
+		t.Fatalf("sent %d messages, want only the current callback result", got)
+	}
+	if got := messenger.messages[0].Text; !strings.Contains(got, "current-shop") || strings.Contains(got, "stale-shop") {
+		t.Fatalf("sent stale callback result: %q", got)
+	}
+}
+
 func TestSlowSendDoesNotBlockAnotherChat(t *testing.T) {
 	blocking := newBlockingMessenger(42)
 	h := NewHandler(blocking, newMemorySessions(), fixedSearcher())
@@ -251,6 +307,89 @@ func (s *supersedingSearcher) Search(ctx context.Context, query domain.SearchQue
 		return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "Old", Concentration: domain.ConcentrationEDP}}}
 	}
 	return search.Result{Offers: []domain.Offer{{Brand: "Brand", Name: "New", Concentration: domain.ConcentrationEDP}}}
+}
+
+type callbackSupersedingSearcher struct {
+	mu            sync.Mutex
+	calls         int
+	firstStarted  chan struct{}
+	secondStarted chan context.Context
+	releaseSecond chan struct{}
+}
+
+func (s *callbackSupersedingSearcher) Search(ctx context.Context, _ domain.SearchQuery) search.Result {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+
+	if call == 1 {
+		close(s.firstStarted)
+		<-ctx.Done()
+		return callbackSearchResult("stale-shop")
+	}
+	s.secondStarted <- ctx
+	<-s.releaseSecond
+	return callbackSearchResult("current-shop")
+}
+
+func callbackSearchResult(shopID string) search.Result {
+	return search.Result{Offers: []domain.Offer{{
+		ShopID: shopID, Brand: "Dior", Name: "Sauvage", Concentration: domain.ConcentrationEDP,
+		VolumeMicroliters: 100000, Kind: domain.ProductKindRetail, PriceKopecks: 10000, InStock: true,
+	}}}
+}
+
+type callbackSessions struct {
+	mu                sync.Mutex
+	value             storage.Session
+	present           bool
+	initialLoads      int
+	initialLoadsReady chan struct{}
+}
+
+func newCallbackSessions(session storage.Session) *callbackSessions {
+	return &callbackSessions{
+		value:             session,
+		present:           true,
+		initialLoadsReady: make(chan struct{}),
+	}
+}
+
+func (s *callbackSessions) Save(_ context.Context, session storage.Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.value = session
+	s.present = true
+	return nil
+}
+
+func (s *callbackSessions) Load(ctx context.Context, _ int64) (storage.Session, bool, error) {
+	s.mu.Lock()
+	if s.initialLoads < 2 {
+		s.initialLoads++
+		value, present := s.value, s.present
+		if s.initialLoads == 2 {
+			close(s.initialLoadsReady)
+		}
+		ready := s.initialLoadsReady
+		s.mu.Unlock()
+		select {
+		case <-ready:
+			return value, present, nil
+		case <-ctx.Done():
+			return storage.Session{}, false, ctx.Err()
+		}
+	}
+	defer s.mu.Unlock()
+	return s.value, s.present, nil
+}
+
+func (s *callbackSessions) Delete(_ context.Context, _ int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.present = false
+	return nil
 }
 
 type blockingMessenger struct {

@@ -32,7 +32,7 @@ type Searcher interface {
 	Search(context.Context, domain.SearchQuery) search.Result
 }
 type activeSearch struct {
-	id     string
+	token  string
 	cancel context.CancelFunc
 }
 type Handler struct {
@@ -53,16 +53,17 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 		return h.messenger.Send(ctx, chatID, Message{Text: "Слишком много запросов. Подожди несколько секунд."})
 	}
 	sessionID := newSessionID()
-	searchCtx := h.beginSearch(ctx, chatID, sessionID)
-	defer h.finishOwned(chatID, sessionID)
+	operationToken := newOperationToken()
+	searchCtx := h.beginSearch(ctx, chatID, operationToken)
+	defer h.finishOwned(chatID, operationToken)
 	result := h.searcher.Search(searchCtx, domain.SearchQuery{Raw: text})
-	if !h.isOwned(chatID, sessionID) {
+	if !h.isOwned(chatID, operationToken) {
 		return nil
 	}
 	explicit := domain.SearchQuery{Raw: text, Concentration: domain.ParseConcentration(text), VolumeMicroliters: domain.ParseVolumeMicroliters(text), Kind: domain.ClassifyKind(text)}
 	candidates := candidatesFromOffers(result.Offers, explicit)
 	if len(candidates) == 0 {
-		if !h.isOwned(chatID, sessionID) {
+		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
 		return h.messenger.Send(searchCtx, chatID, Message{Text: "Ничего не найдено. Уточни бренд и название аромата."})
@@ -70,7 +71,7 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 	session := storage.Session{ChatID: chatID, ID: sessionID, Query: explicit, Candidates: candidates}
 	if len(candidates) > 1 {
 		session.Stage = "choose_fragrance"
-		if !h.isOwned(chatID, sessionID) {
+		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
 		if err := h.sessions.Save(searchCtx, session); err != nil {
@@ -80,14 +81,14 @@ func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) 
 		for i, candidate := range candidates {
 			buttons[i] = Button{candidateLabel(candidate.Query), callbackData(sessionID, "fragrance", strconv.Itoa(i))}
 		}
-		if !h.isOwned(chatID, sessionID) {
+		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
 		return h.messenger.Send(searchCtx, chatID, Message{Text: "Выбери аромат", Buttons: buttons})
 	}
 	session.Query = mergeCandidate(explicit, candidates[0].Query)
 	session.Concentrations = candidates[0].Concentrations
-	return h.advanceOwned(searchCtx, session)
+	return h.advanceOwned(searchCtx, session, operationToken)
 }
 
 func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string) error {
@@ -138,16 +139,17 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		}
 		session.Query.Kind = domain.ProductKind(value)
 		session.Stage = "searching"
-		searchCtx := h.beginSearch(ctx, chatID, session.ID)
-		defer h.finishOwned(chatID, session.ID)
-		if !h.isOwned(chatID, session.ID) {
+		operationToken := newOperationToken()
+		searchCtx := h.beginSearch(ctx, chatID, operationToken)
+		defer h.finishOwned(chatID, operationToken)
+		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
 		if err := h.sessions.Save(searchCtx, session); err != nil {
 			return err
 		}
 		result := h.searcher.Search(searchCtx, session.Query)
-		if !h.isOwned(chatID, session.ID) {
+		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
 		current, ok, err := h.sessions.Load(searchCtx, chatID)
@@ -157,13 +159,13 @@ func (h *Handler) HandleCallback(ctx context.Context, chatID int64, data string)
 		if !ok || current.ID != session.ID {
 			return fmt.Errorf("stale search result")
 		}
-		if !h.isOwned(chatID, session.ID) {
+		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
 		if err := h.sessions.Delete(searchCtx, chatID); err != nil {
 			return err
 		}
-		if !h.isOwned(chatID, session.ID) {
+		if !h.isOwned(chatID, operationToken) {
 			return nil
 		}
 		return h.messenger.Send(searchCtx, chatID, Message{Text: RenderResult(session.Query, result)})
@@ -176,9 +178,9 @@ func (h *Handler) advance(ctx context.Context, session storage.Session) error {
 	return h.advanceChecked(ctx, session, nil)
 }
 
-func (h *Handler) advanceOwned(ctx context.Context, session storage.Session) error {
+func (h *Handler) advanceOwned(ctx context.Context, session storage.Session, operationToken string) error {
 	return h.advanceChecked(ctx, session, func() bool {
-		return h.isOwned(session.ChatID, session.ID)
+		return h.isOwned(session.ChatID, operationToken)
 	})
 }
 
@@ -306,35 +308,39 @@ func candidateLabel(q domain.SearchQuery) string {
 	return strings.TrimSpace(q.Brand + " " + q.Name + " " + q.Edition)
 }
 func callbackData(id, action, value string) string { return id + "|" + action + "|" + value }
-func newSessionID() string {
+func newSessionID() string                         { return newRandomID() }
+
+func newOperationToken() string { return newRandomID() }
+
+func newRandomID() string {
 	buffer := make([]byte, 8)
 	if _, err := rand.Read(buffer); err != nil {
 		panic(err)
 	}
 	return hex.EncodeToString(buffer)
 }
-func (h *Handler) beginSearch(parent context.Context, chatID int64, id string) context.Context {
+func (h *Handler) beginSearch(parent context.Context, chatID int64, token string) context.Context {
 	h.activeMu.Lock()
 	defer h.activeMu.Unlock()
 	if previous, ok := h.active[chatID]; ok {
 		previous.cancel()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	h.active[chatID] = activeSearch{id, cancel}
+	h.active[chatID] = activeSearch{token, cancel}
 	return ctx
 }
-func (h *Handler) isOwned(chatID int64, id string) bool {
+func (h *Handler) isOwned(chatID int64, token string) bool {
 	h.activeMu.Lock()
 	defer h.activeMu.Unlock()
 	current, ok := h.active[chatID]
-	return ok && current.id == id
+	return ok && current.token == token
 }
 
-func (h *Handler) finishOwned(chatID int64, id string) {
+func (h *Handler) finishOwned(chatID int64, token string) {
 	h.activeMu.Lock()
 	defer h.activeMu.Unlock()
 	current, ok := h.active[chatID]
-	if !ok || current.id != id {
+	if !ok || current.token != token {
 		return
 	}
 	delete(h.active, chatID)
