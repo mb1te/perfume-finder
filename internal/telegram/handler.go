@@ -56,6 +56,7 @@ func NewHandler(m Messenger, sessions Sessions, searcher Searcher, enricher enri
 
 func (h *Handler) HandleMessage(ctx context.Context, chatID int64, text string) error {
 	if !h.limiters.Allow(chatID) {
+		h.cancelActive(chatID)
 		return h.messenger.Send(ctx, chatID, Message{Text: "Слишком много запросов. Подожди несколько секунд."})
 	}
 	sessionID := newSessionID()
@@ -379,6 +380,19 @@ func (h *Handler) beginSearch(parent context.Context, chatID int64, token string
 	h.active[chatID] = activeSearch{token, cancel}
 	return ctx
 }
+
+func (h *Handler) cancelActive(chatID int64) {
+	h.activeMu.Lock()
+	current, ok := h.active[chatID]
+	if ok {
+		delete(h.active, chatID)
+	}
+	h.activeMu.Unlock()
+	if ok {
+		current.cancel()
+	}
+}
+
 func (h *Handler) isOwned(chatID int64, token string) bool {
 	h.activeMu.Lock()
 	defer h.activeMu.Unlock()

@@ -380,6 +380,57 @@ func TestSupersededEnrichmentCannotSendPhoto(t *testing.T) {
 	}
 }
 
+func TestRateLimitedMessageCancelsPendingSameChatEnrichment(t *testing.T) {
+	started, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	enricher := &cancelAwareBlockingEnricher{
+		started: started, canceled: canceled, release: release,
+		card: enrichment.Card{
+			Title:     "Sauvage Eau de Parfum Dior",
+			SourceURL: "https://www.fragrantica.ru/perfume/Dior/Sauvage-Eau-de-Parfum-48100.html",
+			PNG:       []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a},
+		},
+	}
+	messenger := &fakeMessenger{}
+	h := NewHandler(messenger, newMemorySessions(), completeVariantSearcher(), enricher)
+	for range 2 {
+		if err := h.HandleMessage(context.Background(), 42, "Dior Sauvage EDP 100 мл"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	thirdDone := make(chan error, 1)
+	go func() { thirdDone <- runCompleteQuery(h, 42, "Dior Sauvage EDP 100 мл") }()
+	<-started
+	if err := h.HandleMessage(context.Background(), 42, "Tom Ford Ombre Leather EDP 100 мл"); err != nil {
+		t.Fatal(err)
+	}
+	messagesAfterRejection := messenger.snapshot()
+	rejected := len(messagesAfterRejection) > 0 && strings.Contains(messagesAfterRejection[len(messagesAfterRejection)-1].Text, "Слишком много запросов")
+
+	contextCanceled := false
+	select {
+	case <-canceled:
+		contextCanceled = true
+	case <-time.After(time.Second):
+	}
+	close(release)
+	if err := <-thirdDone; err != nil {
+		t.Fatal(err)
+	}
+
+	if !rejected {
+		t.Errorf("fourth message was not rate-limited: %+v", messagesAfterRejection)
+	}
+	if !contextCanceled {
+		t.Error("rate-limited message did not cancel pending enrichment context")
+	}
+	for _, message := range messenger.snapshot() {
+		if len(message.PhotoPNG) > 0 {
+			t.Errorf("stale photo sent after rate-limit rejection: %+v", message)
+		}
+	}
+}
+
 type fakeEnricher struct {
 	before  func()
 	card    enrichment.Card
@@ -406,6 +457,24 @@ type blockingEnricher struct {
 func (service *blockingEnricher) Enrich(context.Context, enrichment.Request) (enrichment.Card, bool, error) {
 	service.once.Do(func() { close(service.started) })
 	<-service.release
+	return service.card, true, nil
+}
+
+type cancelAwareBlockingEnricher struct {
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+	card     enrichment.Card
+}
+
+func (service *cancelAwareBlockingEnricher) Enrich(ctx context.Context, _ enrichment.Request) (enrichment.Card, bool, error) {
+	close(service.started)
+	select {
+	case <-ctx.Done():
+		close(service.canceled)
+		<-service.release
+	case <-service.release:
+	}
 	return service.card, true, nil
 }
 
